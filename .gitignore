@@ -1,0 +1,10 @@
+/build/
+/dist/
+/.cache/
+/.lpm/
+/.venv/
+/publish.json
+/third_party/firmware/
+/ui/
+.DS_Store
+.ardot-screens/

@@ -1,0 +1,12 @@
+[submodule "third_party/cm0-appkit"]
+	path = third_party/cm0-appkit
+	url = https://github.com/LILYGO-UI/cm0-appkit.git
+[submodule "third_party/meshtastic-protobufs"]
+	path = third_party/meshtastic-protobufs
+	url = https://github.com/meshtastic/protobufs.git
+[submodule "third_party/protobuf"]
+	path = third_party/protobuf
+	url = https://github.com/protocolbuffers/protobuf.git
+[submodule "third_party/abseil-cpp"]
+	path = third_party/abseil-cpp
+	url = https://github.com/abseil/abseil-cpp.git

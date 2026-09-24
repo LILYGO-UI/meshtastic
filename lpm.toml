@@ -1,0 +1,45 @@
+schema_version = 1
+
+[project]
+package = "lilygo-ui-meshtastic"
+version = "0.1.0"
+app_id = "cc.lilygo.ui.Meshtastic"
+title = "Meshtastic"
+summary = "Meshtastic mesh network client for LILYGO UI"
+description = "A responsive Meshtastic client for browsing nodes, channels, positions, telemetry, and messages through meshtasticd over TCP."
+license = "LicenseRef-proprietary"
+source_repo = "https://github.com/LILYGO-UI/meshtastic"
+homepage = "https://github.com/LILYGO-UI/meshtastic"
+categories = ["Network"]
+
+[[project.authors]]
+name = "LILYGO"
+github = "LILYGO"
+
+[project.assets]
+icon = "assets/app-icon.png"
+
+[[project.assets.screenshots]]
+path = "assets/previews/preview1.png"
+caption = "Meshtastic connection dashboard"
+
+[[project.permissions]]
+id = "network"
+reason = "Connect to meshtasticd and exchange Meshtastic mesh network data"
+
+[project.compatibility]
+architectures = ["arm64"]
+min_appkit_version = "0.1.0"
+
+[project.launcher]
+order = 40
+
+[build]
+host_preset = "host-simulator"
+cross_preset = "cm0-cross"
+package_dir = "dist"
+
+[deploy]
+host = "192.168.8.114"
+user = "pi"
+port = 22
