@@ -1,195 +1,289 @@
-# LILYGO UI Meshtastic
+# LILYGO Meshtastic
 
-`lilygo-ui-meshtastic` is an independent C++17 LVGL application that connects
-to `meshtasticd` over TCP. It is packaged as `lilygo-ui-meshtastic` and uses
+**English** | [简体中文](README.zh-CN.md)
+
+lilygo-ui-meshtastic is a Meshtastic client for LILYGO UI. It is an independent
+C++17 application built with [LILYGO UI AppKit](https://github.com/LILYGO-UI/cm0-appkit)
+and LVGL 9.5, and connects to a Meshtastic radio through the TCP Client API
+provided by `meshtasticd`. It is packaged as `lilygo-ui-meshtastic` and uses
 `cc.lilygo.ui.Meshtastic` for desktop integration.
 
-The application is a top-level CMake project and consumes the platform SDK only
-through:
+The project provides a CM0 ARM64 Linux build and an SDL2 desktop simulator for
+development and testing. Its feature and interaction scope follows the
+Meshtastic Apple client as a reference; no Apple client source is copied into
+this repository.
+
+## Preview
+
+<p>
+  <img src="assets/previews/preview1.png" alt="Meshtastic connection dashboard" width="240">
+</p>
+
+## Features
+
+- **Conversations:** browse channel and private messages, search conversations,
+  track unread counts, load history in pages, and keep drafts while navigating
+  or rotating the display.
+- **Reliable delivery state:** show queued, sent-to-radio, routing ACK,
+  rejected, timeout, and failure states. Sending to the transport is separate
+  from acknowledgement, and retry is always explicit.
+- **Nodes and map:** browse nodes, positions, telemetry, waypoints, and trace
+  paths. The built-in OpenStreetMap view supports pan, zoom, address search,
+  node selection, node following, and local raster tile caching.
+- **Node tools:** request telemetry, trace routes, and create or share editable
+  waypoints. Recorded telemetry and trace paths survive application restarts.
+- **Device settings:** edit device and module configuration through typed
+  fields, preserve fields that are not exposed by the UI, verify writes by
+  reading values back from the radio, and confirm destructive operations such
+  as restart, shutdown, and NodeDB reset.
+- **Channels:** edit channel slots and keys, control uplink/downlink settings,
+  and import or export standard Meshtastic ChannelSet URLs with a preview.
+- **Persistent local data:** SQLite stores messages, nodes, channels,
+  configuration, positions, telemetry, waypoints, and trace replies. Data is
+  isolated by TCP endpoint and radio identity.
+- **Responsive input:** use the same layout across portrait and landscape
+  containers, with physical keyboard support and an LVGL software keyboard when
+  no TCA8418 keyboard is available.
+
+New map tiles and address searches require internet access. Previously cached
+tiles remain available offline, and mesh messaging does not depend on map
+connectivity. See [storage and map behavior](docs/03-storage-and-maps.md) for
+cache paths and offline rules.
+
+## Development Environment
+
+Project identity, version, package metadata, permissions, build presets, and
+deployment defaults come from [lpm.toml](lpm.toml). CMakePresets.json defines
+the host-simulator and cm0-cross configurations. The repository is a top-level
+CMake project and consumes the platform SDK only through:
 
 ```cmake
 find_package(LilyGoUI CONFIG REQUIRED)
 ```
 
-The application is licensed under GPL-3.0-only; see [LICENSE](LICENSE). Third-party
-components keep their own notices in the Debian documentation directory.
+Run project commands from the repository root.
 
-Clone with submodules so the pinned Meshtastic schema and C++ runtime are
-available:
+### Get the Source
 
 ```sh
-git clone --recurse-submodules <repository-url>
+git clone --recurse-submodules https://github.com/LILYGO-UI/meshtastic.git
+cd meshtastic
 ```
 
-Install LPM and keep it available as `lpm` in `PATH`. The checked-in
-`lpm.toml` is the single developer-maintained source for the application
-identity, release metadata, permissions, compatibility, build presets, and
-deployment defaults. CMake validates it through LPM and generates the
-Launcher, desktop, AppStream, and package metadata from it. To validate the
-public metadata directly, run:
+For an existing checkout, initialize the pinned AppKit, Meshtastic schema,
+Protobuf, and Abseil dependencies:
+
+```sh
+git submodule update --init --recursive
+```
+
+The presets use the source SDK in third_party/cm0-appkit; a separate AppKit
+installation is not required for the simulator. The SDK package builds AppKit
+and LVGL as static libraries inside this application. It does not introduce
+AppKit or LVGL shared-library dependencies.
+
+### Host Dependencies
+
+Use CMake 3.21 or later, Python 3.11 or later, and a C/C++ compiler with C++17
+support. The presets use Unix Makefiles. AppKit requires patch for its LVGL
+patches. SDL2 supplies the host display, FreeType renders fonts, json-c parses
+service data, SQLite stores application data, and libpng validates cached map
+tiles. Runtime HTTP requests use the curl executable, so libcurl development
+headers are not required.
+
+#### Debian 12 / Ubuntu 24.04 or Later
+
+```sh
+sudo apt update
+sudo apt install build-essential cmake git pkg-config patch libsdl2-dev \
+  libfreetype6-dev libjson-c-dev libsqlite3-dev libpng-dev curl \
+  ca-certificates python3 python3-venv python3-pip
+```
+
+Older distributions need CMake and Python upgraded to the minimum versions
+above.
+
+#### macOS
+
+Install the Xcode Command Line Tools if needed, then install the dependencies
+with [Homebrew](https://brew.sh/):
+
+```sh
+xcode-select --install
+brew install git cmake pkg-config patch sdl2 freetype json-c sqlite libpng curl python
+```
+
+Complete the Homebrew shell setup so its tools and libraries are on PATH.
+
+#### LPM
+
+CMake invokes lpm metadata --format cmake while configuring. Install LPM in a
+project-local Python environment:
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install "git+https://github.com/LILYGO-UI/lpm.git"
+lpm --version
+```
+
+Reactivate the environment in each new terminal before running lpm. CMake
+searches .venv/bin as well as PATH. To use another installation, pass
+-DLPM_EXECUTABLE=/absolute/path/to/lpm during configuration. Inspect the
+metadata generated from lpm.toml with:
 
 ```sh
 lpm metadata --format publish-json
 ```
 
-## Client features
-
-The Apple client is a functional and interaction reference. This implementation
-uses C++17, LVGL and AppKit with its own Linux services; no Apple client source
-has been copied or translated. The map engine is adapted from LILYGO UI Maps
-under its MIT notice and is built entirely inside this repository.
-
-- Conversations group channel and private messages, count unread messages and
-  support searching. Opening a conversation marks it read; inactive chat screens
-  do not change unread state. History loads in pages and drafts survive navigation.
-- Outgoing messages show queued, sent-to-radio, routing ACK, rejection, timeout
-  and failure states. Sending to the transport is distinct from acknowledgement.
-  Retrying is explicit; a timeout never triggers an automatic duplicate send.
-- SQLite stores messages, nodes, channels, configurations, positions, telemetry,
-  waypoints and trace replies. Data is isolated by TCP endpoint and radio identity.
-  An interrupted transmission reopens with delivery unknown and can be retried.
-- The map uses OpenStreetMap raster tiles with local caching, pan/zoom, address
-  search, node selection, detail navigation, node following, position tracks,
-  waypoints and trace paths. Previously downloaded tiles work offline. New map
-  tiles and address searches require internet access; mesh messages do not.
-- Node details offer telemetry requests, route tracing and editable waypoint
-  sharing. Recorded telemetry samples and trace paths survive restarts.
-- Settings expose all device and module configuration categories in the pinned
-  schema through typed fields, preserve fields that are not edited, and verify
-  saved values by reading the radio back. Edits survive asynchronous refresh and
-  rotation. Radio restart, shutdown and NodeDB reset require a confirmation.
-- Channels support slot editing, channel key selection, uplink/downlink and
-  standard Meshtastic ChannelSet URL import/export. Import shows a preview and
-  makes applying the link's LoRa configuration optional.
-
-See [architecture and scope](docs/02-client-architecture.md) and
-[storage and maps](docs/03-storage-and-maps.md) for data paths and operation.
-
-## Meshtastic TCP support
-
-The implementation follows the official
-[`Client API`](https://meshtastic.org/docs/development/device/client-api/)
-transport specification and the pinned
-[`meshtastic/protobufs`](https://github.com/meshtastic/protobufs) schema:
-
-- default TCP endpoint `127.0.0.1:4403`
-- 32 `0xc3` wake/resynchronization bytes on connection
-- frames beginning with `0x94 0xc3`, followed by a two-byte big-endian length
-- a maximum `ToRadio`/`FromRadio` protobuf payload of 512 bytes
-- `ToRadio.want_config_id` on connect and matching
-  `FromRadio.config_complete_id` handshake completion
-- periodic `ToRadio.heartbeat` keep-alive frames on quiet links
-- automatic reconnect after transport loss
-- clean TCP shutdown
-
-The protocol layer uses C++ classes generated by Protobuf 36.0 from the pinned
-official Meshtastic schema. It synchronizes local node information, NodeDB
-entries, positions, device metrics, channels, configuration, module
-configuration, metadata, and incoming packets. The client exposes generic
-`ToRadio`/`FromRadio` protobuf access, arbitrary `Data` packets, and
-`ADMIN_APP` requests; the latter includes configuration reads and writes such
-as changing the LoRa region. Raw `FromRadio` envelopes remain available to
-callers through the event queue, so newly added protobuf variants do not need a
-client release before they can be consumed.
-
-`MeshtasticClient` provides convenience methods for full config sync,
-heartbeats, disconnects, XModem and MQTT proxy messages, arbitrary mesh data,
-AdminMessage requests, session-key management, configuration transactions, and
-LoRa region updates. Admin operations default to the connected local node; pass
-an explicit destination for a remote node. Call `request_session_key()` before
-write operations when firmware access control is enabled; the client reuses the
-returned key for configuration writes and edit transactions.
-
-Generated sources are committed so normal host and cross builds do not require
-`protoc`. To regenerate them after deliberately updating the schema submodule,
-provide Protobuf compiler 36.0 and run:
+Check the environment before building:
 
 ```sh
-MESHTASTIC_PROTOC=/path/to/protoc scripts/regenerate-protobufs.sh
+cmake --version
+python --version
+pkg-config --modversion sdl2 freetype2 json-c sqlite3 libpng
+lpm metadata --format cmake
 ```
 
-## Running
+### Device Cross Compiler
 
-The application and host simulator connect to the local `meshtasticd` service
-at `127.0.0.1:4403` by default:
+Skip this section when building only the desktop simulator. Device builds need
+an AArch64 Linux cross compiler on the development machine.
+
+**Debian / Ubuntu:**
+
+```sh
+sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+```
+
+**Apple Silicon macOS:**
+
+```sh
+brew install aarch64-unknown-linux-gnu
+```
+
+The BSP toolchain expects these executable names on PATH:
+
+```sh
+aarch64-linux-gnu-gcc --version
+aarch64-linux-gnu-g++ --version
+```
+
+The BSP supplies target headers and libraries but does not install the host
+cross compiler. Cross builds require target development files, including
+json-c, FreeType, and DRM, in the sysroot; host libraries cannot replace them.
+
+## Build and Test
+
+Use LPM from the repository root after completing the environment setup. It
+reads the presets and package output directory from lpm.toml.
+
+### Desktop Simulator
+
+Start the simulator with the default Meshtastic endpoint, 127.0.0.1:4403:
+
+```sh
+lpm start --foreground
+```
+
+To reuse an existing build, use lpm start --no-build --foreground. The
+underlying executable is:
 
 ```sh
 ./build/host-simulator/lilygo-ui-meshtastic
 ```
 
-The target board must have a Meshtastic Client API server listening on TCP
-port 4403 and connected to the radio. The application reports a configuration
-sync timeout and reconnects when that service is unavailable.
-
-Override the endpoint with application-specific options. These options are
-removed before the remaining arguments are passed to AppKit:
+The target board or local service must expose the Meshtastic Client API on TCP
+port 4403 and be connected to the radio. Override the endpoint with
+application-specific options:
 
 ```sh
 ./build/host-simulator/lilygo-ui-meshtastic \
   --host 192.168.8.222 --port 4403
 ```
 
-Both `--host=value` and `--port=value` are also accepted. The application has
-no presentation mode option. Its layout responds to actual LVGL container
-geometry and is reapplied when the geometry changes.
-
-LPM can configure, build, and run the host simulator in one command while
-passing the Meshtastic endpoint options through to the application:
+Both --host=value and --port=value are accepted. LPM forwards options after
+the separator to the application:
 
 ```sh
 lpm start --foreground -- --host 192.168.8.222 --port 4403
 ```
 
-Without a physical TCA8418 keyboard, tapping the message composer or node
-name field opens an LVGL software keyboard. It reserves space below the page,
-keeps the editor visible through rotation, and can be reopened by tapping the
-field after dismissal. Confirm sends the message or saves the configuration;
-cancel retains a chat draft or restores the node name from before editing.
-AppKit owns physical keyboard discovery, hotplug, focus navigation, and software
-keyboard suppression, following its
-[keyboard input contract](third_party/cm0-appkit/docs/keyboard-input-contract.md).
+The application reports a configuration sync timeout and reconnects when the
+service is unavailable. It has no presentation-mode option; layout responds to
+actual LVGL container geometry and is reapplied when the geometry changes.
 
-## Prepare AppKit
+When no physical TCA8418 keyboard is present, tapping the message composer or
+node name field opens the software keyboard. Confirm sends or saves the edit;
+cancel keeps a chat draft or restores the previous node name. AppKit owns
+physical keyboard discovery, hotplug, focus navigation, and software-keyboard
+suppression.
 
-AppKit is pinned as the `third_party/cm0-appkit` Git submodule. Initialize it
-before configuring the application:
+### Tests
 
-```sh
-git submodule update --init --recursive
-```
-
-The presets select this source SDK with `LilyGoUI_DIR`. Its package config
-builds AppKit and LVGL as static libraries and links them into each application.
-Updating AppKit code requires updating the submodule revision and rebuilding
-the application. A local SDK checkout can be selected explicitly:
-
-```sh
-cmake --preset host-simulator -DLilyGoUI_DIR=/path/to/appkit
-```
-
-Host builds use the SDK's font assets. Devices install `lilygo-ui-appkit-dev`,
-version 0.1.0 or newer, which contains the source SDK and the shared Inter,
-Source Han Sans CN, Font Awesome, and font licenses. Applications do not bundle
-duplicate fonts. AppKit and LVGL remain statically linked into each application;
-the package supplies no AppKit or LVGL shared libraries. The
-`min_appkit_version` field in `lpm.toml` sets this package's minimum version.
-The package also supports build environments using an installed source SDK
-instead of the submodule.
-
-Cross builds require the BSP sysroot and its system development libraries;
-they do not require an AppKit SDK package in the sysroot.
-When returning from a binary SDK build, use a fresh build directory so no old
-imported targets or SDK search paths remain cached.
-
-## Host build and tests
-
-The recommended test entry point uses the host preset declared in `lpm.toml`:
+Configure and build the host simulator, then run the complete test suite:
 
 ```sh
 lpm test
 ```
 
-The underlying stable CMake entry points remain available:
+| Test group | Coverage |
+| --- | --- |
+| meshtastic-maps | Map projection, tile scheduling, PNG validation, cache behavior, node overlays, and offline operation |
+| meshtastic-configuration | Typed device/module edits, preserved protobuf fields, transactions, readback verification, and destructive-operation confirmation |
+| meshtastic-channels | Channel slots, keys, uplink/downlink settings, and ChannelSet URL import/export |
+| meshtastic-workflows | Reliable send states, ACK/NAK matching, retry behavior, reconnect recovery, and page workflows |
+| meshtastic-persistence, meshtastic-client-history | SQLite migrations, endpoint/radio isolation, message history, telemetry, positions, and interrupted-send recovery |
+| meshtastic-protobufs, meshtastic-core | Official field encodings, bounded stream framing, generated Protobuf conversion, and loopback TCP handshake |
+| meshtastic-view-model, meshtastic-qr | Router/page state transitions, commands, and QR payload generation |
+| meshtastic-render-* | Headless UI, settings, channel, map, and search renders at 320 x 568, 568 x 1232, 1232 x 568, and 1024 x 768 |
+
+Render tests write PPM images below build/host-simulator. Inspect the images
+after UI changes; passing assertions does not verify visual hierarchy, text
+clipping, keyboard behavior, or rotation state. Follow the [UI development
+guidelines](docs/01-user-interface.md) for acceptance requirements.
+
+The live smoke test is opt-in and connects to the default endpoint:
+
+```sh
+LILYGO_MESHTASTIC_DB_PATH=:memory: \
+  build/host-simulator/meshtastic-live-smoke 127.0.0.1 4403
+```
+
+### CM0 Device Build
+
+The cm0-cross preset targets CM0 Raspberry Pi OS on AArch64, uses a Release
+build, disables host tests, and installs under /usr. Build and package the
+application with:
+
+```sh
+lpm pack
+```
+
+The first lpm pack (or cmake --preset cm0-cross) downloads CM0 BSP 0.1.0,
+verifies its pinned SHA-256, and extracts the sysroot to
+.cache/cm0-bsp/0.1.0/sysroot. The first download needs GitHub access; later
+configurations reuse the cache. Set -DCM0_BSP_CACHE_DIR=/absolute/path/to/cache
+to choose another cache location. No sibling CM0BspBuilder checkout is needed.
+
+CPack writes an ARM64 .deb to dist/. The package installs the executable,
+Launcher manifest, icon, desktop file, AppStream metadata, third-party notices,
+and AppKit font licenses. Its runtime dependency includes
+lilygo-ui-appkit-dev >= 0.1.0, as declared by min_appkit_version in lpm.toml.
+
+Deploy the newest package using the SSH destination in lpm.toml:
+
+```sh
+lpm deploy
+```
+
+<details>
+<summary>Underlying CMake commands</summary>
+
+LPM wraps the following commands. LPM is still required to read project
+metadata during configuration.
+
+Host build and tests:
 
 ```sh
 cmake --preset host-simulator
@@ -197,22 +291,7 @@ cmake --build --preset host-simulator --parallel
 ctest --preset host-simulator --output-on-failure
 ```
 
-The tests cover routing and page view models, official protobuf field
-encodings, fragmented and malformed stream framing, `FromRadio` node/message
-decoding, a loopback TCP handshake with bidirectional text traffic, and
-headless renders at 320x568, 568x1232, 1232x568, and 1024x768.
-
-## Device build and package
-
-Build the configured cross preset and place the Debian package under `dist/`:
-
-```sh
-lpm pack
-```
-
-`lpm deploy` installs the newest package using the SSH destination declared in
-`lpm.toml` (`pi@192.168.8.197:22` by default). The equivalent lower-level build
-and packaging commands are:
+Device build and packaging:
 
 ```sh
 cmake --preset cm0-cross
@@ -220,24 +299,17 @@ cmake --build --preset cm0-cross --parallel
 cpack --config build/cm0-cross/CPackConfig.cmake -B dist
 ```
 
-The package installs the executable, Launcher manifest, canonical
-`assets/app-icon.png` icon, desktop file, AppStream metadata, third-party
-license files, and AppKit font license notices. Its `lilygo-ui-appkit-dev`
-SDK and font package dependency uses the minimum version declared in `lpm.toml`.
-It does not depend on the Launcher source tree or declare legacy package
-migration relationships.
+</details>
 
-## GPU renderer builds
+### GPU Renderer Builds
 
 Device rendering is selected at application build time by the source AppKit
-SDK. Use an updated SDK supporting `LILYGO_UI_RENDERER` and a target-matched
-CM0 sysroot with `libgbm-dev`, `libegl-dev`, and `libgles-dev`. The original
-BSP 0.1.0 lacks those GPU development dependencies. The original pinned
-AppKit submodule does not support GPU renderer selection; use a newer source
-SDK explicitly for this build.
+SDK. Use an updated SDK supporting LILYGO_UI_RENDERER and a target-matched
+CM0 sysroot with libgbm-dev, libegl-dev, and libgles-dev. The original pinned
+AppKit submodule and BSP 0.1.0 do not provide this GPU configuration.
 
-Select the SDK source checkout or the directory containing the installed
-source SDK's `LilyGoUIConfig.cmake`:
+For an OpenGL ES build, select a newer AppKit checkout explicitly and keep a
+separate build directory:
 
 ```sh
 cmake --preset cm0-cross -B build/cm0-opengles \
@@ -248,27 +320,76 @@ cmake --build build/cm0-opengles --parallel
 cpack --config build/cm0-opengles/CPackConfig.cmake -B dist/opengles
 ```
 
-The executable contains AppKit and LVGL code, and its Debian package declares
-the selected renderer's system graphics dependencies. Keep separate build
-directories for software, OpenGL ES, and experimental NanoVG. Use software
-rendering for host simulator tests. Compare rendering correctness, frame time,
-memory, and repeated application exit/return on the target before changing a
-release renderer.
+Use software rendering for host tests. Before changing a release renderer,
+compare rendering correctness, frame time, memory use, and repeated exit and
+return behavior on the target.
 
-## Source boundaries
+## Meshtastic TCP and Protocol
 
-- `src/main.cpp`: endpoint option parsing and AppKit runtime entry point
-- `src/app.cpp`: application lifecycle, snapshot distribution, and AppKit descriptor
-- `src/app_router.cpp`: top-level and detail-page navigation
-- `src/components/`: shared, business-independent LVGL components
-- `src/pages/`: page-local views and view models
-- `src/domain/meshtastic_protocol.cpp`: bounded framing and generated Protobuf conversion
-- `src/domain/meshtastic_client.cpp`: socket lifecycle, handshake, reconnect, and
-  thread-safe snapshots
-- `tests/test_core.cpp`: protocol and loopback TCP checks
-- `tests/test_view_model.cpp`: router and page view-model checks
-- `tests/live_smoke.cpp`: opt-in live handshake against the default endpoint
-- `tests/render_ui.cpp`: headless responsive rendering checks
+The transport follows the official
+[Meshtastic Client API](https://meshtastic.org/docs/development/device/client-api/)
+and the pinned [meshtastic/protobufs](https://github.com/meshtastic/protobufs)
+schema:
 
-Network work runs on a background thread. LVGL reads only immutable client
-snapshots from its own timer callback, so no worker thread calls LVGL APIs.
+- default endpoint 127.0.0.1:4403
+- 32 0xc3 wake/resynchronization bytes on connection
+- frames beginning with 0x94 0xc3, followed by a two-byte big-endian length
+- maximum ToRadio/FromRadio protobuf payload of 512 bytes
+- ToRadio.want_config_id and matching FromRadio.config_complete_id handshake
+- periodic ToRadio.heartbeat frames on quiet links
+- automatic reconnect after transport loss and clean TCP shutdown
+
+The protocol layer uses C++ classes generated by Protobuf 36.0. It synchronizes
+node information, NodeDB entries, positions, device metrics, channels,
+configuration, module configuration, metadata, and incoming packets. The
+client also exposes generic ToRadio/FromRadio access, arbitrary Data packets,
+ADMIN_APP requests, session-key management, XModem and MQTT proxy messages,
+and LoRa region updates. Raw FromRadio envelopes remain available through the
+event queue.
+
+Generated sources are committed, so normal builds do not require protoc. To
+regenerate them after deliberately updating the schema submodule, provide
+Protobuf compiler 36.0:
+
+```sh
+MESHTASTIC_PROTOC=/path/to/protoc scripts/regenerate-protobufs.sh
+```
+
+## Troubleshooting
+
+| Symptom | Action |
+| --- | --- |
+| lpm is required to read project metadata | Install LPM in .venv, put it on PATH, or set LPM_EXECUTABLE. |
+| LilyGoUI or LVGL cannot be found | Run git submodule update --init --recursive; the presets expect third_party/cm0-appkit. |
+| The client times out during configuration sync | Check that meshtasticd or another Client API server is listening on the selected host and TCP port, normally 127.0.0.1:4403. |
+| SDL2, FreeType, json-c, SQLite, or libpng is missing | Install the host development packages; for cross builds, check the target sysroot. |
+| Homebrew libraries are not found | Configure with cmake --preset host-simulator -DCMAKE_PREFIX_PATH="$(brew --prefix)". |
+| Protobuf regeneration fails | Use Protobuf compiler 36.0 and initialize the pinned schema submodule before running scripts/regenerate-protobufs.sh. |
+| BSP download or cross configuration fails | Check GitHub access, AArch64 compiler names, sysroot disk space, and CM0_BSP_CACHE_DIR. |
+| Map tiles or address search do not load | Check curl, CA certificates, connectivity, and LILYGO_MESHTASTIC_MAP_DISABLE_NETWORK; cached tiles still work offline. |
+| GPU renderer configuration fails | Use a newer source AppKit SDK and a sysroot that provides the required GBM, EGL, and GLES development files. |
+
+## Documentation
+
+| Guide | Contents |
+| --- | --- |
+| [Project overview](docs/00-overview.md) | Repository constraints, metadata, source boundaries, SDK setup, and the standard workflow |
+| [UI development guidelines](docs/01-user-interface.md) | View/ViewModel boundaries, typography, responsive layout, object ownership, and UI acceptance |
+| [Client architecture](docs/02-client-architecture.md) | Transport, protocol, session, persistence, configuration, map services, and message workflows |
+| [Storage and maps](docs/03-storage-and-maps.md) | SQLite paths, session isolation, map cache behavior, offline mode, and cross-build dependencies |
+| [Refactor validation](docs/04-refactor-validation.md) | Build, test, render, package, and live-device validation records |
+| [UI design guidelines compatibility page](docs/ui-design-guidelines.md) | Redirect to the current UI development guidelines |
+
+## Acknowledgments and License
+
+The application is licensed under [GPL-3.0-only](LICENSE). The Meshtastic
+schema, Protobuf, Abseil, SQLite, AppKit, and LVGL components retain their own
+licenses and notices. The map projection, tile cache, HTTP client, and parts of
+the asynchronous tile presentation were adapted from
+[LILYGO UI Maps](https://github.com/LILYGO-UI/lilygo-ui-maps) under the MIT
+notice in [src/maps/NOTICE.md](src/maps/NOTICE.md).
+
+Map tiles are provided by [OpenStreetMap.de](https://www.openstreetmap.de/),
+address search uses [Nominatim](https://nominatim.org/), and the interface keeps
+the required OpenStreetMap attribution. Follow the relevant service policies
+when running or distributing the application.
