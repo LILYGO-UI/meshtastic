@@ -7,6 +7,14 @@ include(GNUInstallDirs)
 include(CTest)
 find_package(LilyGoUI CONFIG REQUIRED)
 find_package(Threads REQUIRED)
+include(cmake/PNGDependency.cmake)
+include(cmake/SQLiteDependency.cmake)
+find_path(MESHTASTIC_JSON_INCLUDE_DIR NAMES json-c/json.h REQUIRED)
+find_library(MESHTASTIC_JSON_LIBRARY NAMES json-c REQUIRED)
+add_library(MeshtasticJSON::MeshtasticJSON UNKNOWN IMPORTED)
+set_target_properties(MeshtasticJSON::MeshtasticJSON PROPERTIES
+    IMPORTED_LOCATION "${MESHTASTIC_JSON_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${MESHTASTIC_JSON_INCLUDE_DIR}")
 
 set(ABSL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(ABSL_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
@@ -32,9 +40,12 @@ configure_file(
     @ONLY)
 
 set(MESHTASTIC_PROTOBUF_SOURCES
+    src/generated/meshtastic/admin.pb.cc
+    src/generated/meshtastic/apponly.pb.cc
     src/generated/meshtastic/atak.pb.cc
     src/generated/meshtastic/channel.pb.cc
     src/generated/meshtastic/config.pb.cc
+    src/generated/meshtastic/connection_status.pb.cc
     src/generated/meshtastic/device_ui.pb.cc
     src/generated/meshtastic/mesh.pb.cc
     src/generated/meshtastic/module_config.pb.cc
@@ -51,7 +62,16 @@ target_link_libraries(meshtastic_protobufs PUBLIC
 
 add_library(lilygo_ui_meshtastic_core STATIC
     src/domain/meshtastic_protocol.cpp
-    src/domain/meshtastic_client.cpp)
+    src/domain/meshtastic_client.cpp
+    src/transport/tcp_transport.cpp
+    src/services/radio_session.cpp
+    src/persistence/meshtastic_repository.cpp
+    src/configuration/admin_transaction.cpp
+    src/configuration/configuration_catalog.cpp
+    src/maps/domain/map_model.cpp
+    src/maps/domain/tile_cache.cpp
+    src/maps/services/http_client.cpp
+    src/maps/services/tile_service.cpp)
 target_include_directories(lilygo_ui_meshtastic_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_BINARY_DIR}/generated)
@@ -60,12 +80,17 @@ target_compile_options(lilygo_ui_meshtastic_core PRIVATE
 target_compile_features(lilygo_ui_meshtastic_core PUBLIC cxx_std_17)
 target_link_libraries(lilygo_ui_meshtastic_core PUBLIC
     Threads::Threads
+    PNG::PNG
+    ${MESHTASTIC_SQLITE_TARGET}
+    MeshtasticJSON::MeshtasticJSON
     meshtastic_protobufs)
 
 add_library(lilygo_ui_meshtastic_ui STATIC
     src/app.cpp
     src/app_router.cpp
     src/components/components.cpp
+    src/components/qr_code.cpp
+    src/components/search_input.cpp
     src/pages/channels/channels_view.cpp
     src/pages/channels/channels_view_model.cpp
     src/pages/chat/chat_view.cpp
@@ -130,6 +155,9 @@ configure_file(third_party/protobuf/LICENSE
 configure_file(third_party/abseil-cpp/LICENSE
     ${CMAKE_CURRENT_BINARY_DIR}/LICENSE.abseil COPYONLY)
 install(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/maps/NOTICE.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3/README.md
     ${CMAKE_CURRENT_BINARY_DIR}/LICENSE.meshtastic-protobufs
     ${CMAKE_CURRENT_BINARY_DIR}/LICENSE.protobuf
     ${CMAKE_CURRENT_BINARY_DIR}/LICENSE.abseil
@@ -137,6 +165,24 @@ install(FILES
     COMPONENT app)
 
 if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
+    foreach(suite IN ITEMS maps configuration channels workflows persistence client_history)
+        string(REPLACE "_" "-" suite_slug "${suite}")
+        add_executable(meshtastic-${suite_slug}-tests tests/test_${suite}.cpp)
+        target_compile_options(meshtastic-${suite_slug}-tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+        if(suite STREQUAL "persistence" OR suite STREQUAL "client_history")
+            target_link_libraries(meshtastic-${suite_slug}-tests PRIVATE lilygo_ui_meshtastic_core)
+        else()
+            target_link_libraries(meshtastic-${suite_slug}-tests PRIVATE lilygo_ui_meshtastic_ui)
+        endif()
+        add_test(NAME meshtastic-${suite_slug} COMMAND meshtastic-${suite_slug}-tests)
+    endforeach()
+    add_executable(meshtastic-protobuf-tests tests/test_meshtastic_protobufs.cpp)
+    target_compile_options(meshtastic-protobuf-tests PRIVATE
+        -Wall -Wextra -Wpedantic -UNDEBUG)
+    target_link_libraries(meshtastic-protobuf-tests PRIVATE
+        meshtastic_protobufs)
+    add_test(NAME meshtastic-protobufs COMMAND meshtastic-protobuf-tests)
+
     add_executable(meshtastic-core-tests tests/test_core.cpp)
     target_compile_options(meshtastic-core-tests PRIVATE
         -Wall -Wextra -Wpedantic -UNDEBUG)
@@ -151,12 +197,31 @@ if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
         lilygo_ui_meshtastic_ui)
     add_test(NAME meshtastic-view-model COMMAND meshtastic-view-model-tests)
 
+    add_executable(meshtastic-qr-tests tests/test_qr_code.cpp)
+    target_compile_options(meshtastic-qr-tests PRIVATE
+        -Wall -Wextra -Wpedantic -UNDEBUG)
+    target_link_libraries(meshtastic-qr-tests PRIVATE
+        lilygo_ui_meshtastic_ui)
+    add_test(NAME meshtastic-qr COMMAND meshtastic-qr-tests)
+
     add_executable(meshtastic-live-smoke tests/live_smoke.cpp)
     target_compile_options(meshtastic-live-smoke PRIVATE
         -Wall -Wextra -Wpedantic)
     target_link_libraries(meshtastic-live-smoke PRIVATE
         lilygo_ui_meshtastic_core)
 
+    add_executable(meshtastic-render-settings-channels tests/render_settings_channels.cpp)
+    target_compile_options(meshtastic-render-settings-channels PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    target_link_libraries(meshtastic-render-settings-channels PRIVATE lilygo_ui_meshtastic_ui)
+    add_executable(meshtastic-render-search tests/render_search.cpp)
+    target_compile_options(meshtastic-render-search PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    target_link_libraries(meshtastic-render-search PRIVATE lilygo_ui_meshtastic_ui)
+    add_test(NAME meshtastic-render-search COMMAND meshtastic-render-search)
+    add_executable(meshtastic-render-map tests/render_map.cpp)
+    target_compile_options(meshtastic-render-map PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    target_link_libraries(meshtastic-render-map PRIVATE lilygo_ui_meshtastic_ui)
+    target_compile_definitions(meshtastic-render-map PRIVATE
+        MESHTASTIC_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_executable(meshtastic-render-ui tests/render_ui.cpp)
     target_compile_options(meshtastic-render-ui PRIVATE
         -Wall -Wextra -Wpedantic -UNDEBUG)
@@ -179,7 +244,23 @@ if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
         add_test(NAME meshtastic-render-${viewport} COMMAND meshtastic-render-ui
             ${_width} ${_height}
             ${CMAKE_CURRENT_BINARY_DIR}/meshtastic-${viewport}.ppm)
+        add_test(NAME meshtastic-settings-render-${viewport} COMMAND meshtastic-render-settings-channels
+            ${_width} ${_height} ${CMAKE_CURRENT_BINARY_DIR}/meshtastic-settings-${viewport})
+        add_test(NAME meshtastic-map-render-${viewport} COMMAND meshtastic-render-map
+            ${_width} ${_height} ${CMAKE_CURRENT_BINARY_DIR}/meshtastic-map-${viewport}.ppm)
+        set_tests_properties(meshtastic-map-render-${viewport} PROPERTIES
+            ENVIRONMENT "LILYGO_MESHTASTIC_MAP_DISABLE_NETWORK=1;LILYGO_MESHTASTIC_DB_PATH=:memory:")
+        set_tests_properties(meshtastic-render-${viewport} PROPERTIES
+            ENVIRONMENT "LILYGO_MESHTASTIC_MAP_DISABLE_NETWORK=1;LILYGO_MESHTASTIC_DB_PATH=:memory:")
     endforeach()
+    set_tests_properties(meshtastic-view-model PROPERTIES
+        ENVIRONMENT "LILYGO_MESHTASTIC_MAP_DISABLE_NETWORK=1;LILYGO_MESHTASTIC_DB_PATH=:memory:")
+    set_tests_properties(meshtastic-maps meshtastic-workflows meshtastic-persistence meshtastic-client-history
+        meshtastic-core meshtastic-render-compact-portrait meshtastic-render-portrait
+        meshtastic-render-landscape meshtastic-render-large-landscape PROPERTIES
+        RESOURCE_LOCK meshtastic_loopback)
+    set_tests_properties(meshtastic-maps PROPERTIES
+        ENVIRONMENT "LILYGO_MESHTASTIC_MAP_DISABLE_NETWORK=1;LILYGO_MESHTASTIC_DB_PATH=:memory:")
 endif()
 
 # New applications have no legacy CM0 package to replace. Add Debian migration
@@ -207,7 +288,7 @@ set(CPACK_COMPONENTS_ALL app)
 set(CPACK_DEBIAN_APP_PACKAGE_NAME "${LILYGO_UI_PACKAGE_NAME}")
 set(CPACK_DEBIAN_APP_FILE_NAME DEB-DEFAULT)
 set(CPACK_DEBIAN_APP_PACKAGE_DEPENDS
-    "libc6, libstdc++6, libdrm2, libfreetype6, lilygo-ui-appkit-dev (>= ${LILYGO_UI_MIN_APPKIT_VERSION})")
+    "libc6, libstdc++6, libdrm2, libfreetype6, libpng16-16t64, zlib1g, libbz2-1.0, libbrotli1, libsqlite3-0, libjson-c5, curl, ca-certificates, lilygo-ui-appkit-dev (>= ${LILYGO_UI_MIN_APPKIT_VERSION})")
 if(LILYGO_UI_GRAPHICS_DEBIAN_DEPENDS)
     string(APPEND CPACK_DEBIAN_APP_PACKAGE_DEPENDS
         ", ${LILYGO_UI_GRAPHICS_DEBIAN_DEPENDS}")

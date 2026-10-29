@@ -29,6 +29,9 @@ enum class PendingNavigation {
     none,
     navigate,
     back,
+    direct_chat,
+    node_detail,
+    map_node,
 };
 
 struct AppViewState {
@@ -45,6 +48,7 @@ struct AppViewState {
     std::unique_ptr<PageView> active_view;
     meshtastic::ClientSnapshot snapshot;
     std::uint64_t rendered_revision      = 0;
+    std::uint32_t last_radio_number = 0;
     lv_obj_t *surface                    = nullptr;
     lv_obj_t *content                    = nullptr;
     lv_obj_t *page                       = nullptr;
@@ -52,6 +56,10 @@ struct AppViewState {
     lv_timer_t *refresh_timer            = nullptr;
     PendingNavigation pending_navigation = PendingNavigation::none;
     AppPage pending_page                 = AppPage::connect;
+    AppPage detail_return_page           = AppPage::nodes;
+    std::uint32_t pending_direct_peer    = 0;
+    std::uint32_t pending_node = 0;
+    std::string pending_direct_name;
     bool navigation_scheduled            = false;
     std::int32_t page_scroll_y           = 0;
     std::int32_t layout_width            = 0;
@@ -117,15 +125,25 @@ void sync_view_models()
     if (app_state.nodes_view_model) app_state.nodes_view_model->sync(app_state.snapshot);
     if (app_state.channels_view_model) app_state.channels_view_model->sync(app_state.snapshot);
     if (app_state.channels_view_model && app_state.chat_view_model) {
-        app_state.chat_view_model->select_channel(app_state.channels_view_model->selected_channel(),
-                                                  app_state.channels_view_model->selected_channel_name());
+        // Preserve the conversation chosen from Messages, including private
+        // peers. The primary channel is only the initial fallback; repeatedly
+        // copying channel selection here would make every direct chat snap
+        // back to the channel on the next snapshot refresh.
+        if (!app_state.chat_view_model->has_selection()) {
+            app_state.chat_view_model->select_channel(app_state.channels_view_model->selected_channel(),
+                                                      app_state.channels_view_model->selected_channel_name());
+        }
         app_state.chat_view_model->sync(app_state.snapshot);
     }
-    if (app_state.node_detail_view_model) app_state.node_detail_view_model->sync(app_state.snapshot);
+    if (app_state.node_detail_view_model && app_state.router.page() == AppPage::node_detail)
+        app_state.node_detail_view_model->sync(app_state.snapshot);
     if (app_state.device_tools_view_model) {
         app_state.device_tools_view_model->sync(app_state.snapshot, connection_enabled);
     }
-    if (app_state.map_view_model) app_state.map_view_model->sync(app_state.snapshot);
+    if (app_state.map_view_model) {
+        app_state.map_view_model->set_active(app_state.router.page() == AppPage::map);
+        app_state.map_view_model->sync(app_state.snapshot);
+    }
 }
 
 void schedule_navigation(PendingNavigation action, AppPage page = AppPage::connect)
@@ -153,9 +171,30 @@ void request_back(void *context)
     schedule_navigation(PendingNavigation::back);
 }
 
+void request_direct_chat(void *context, std::uint32_t peer, const char *name)
+{
+    (void)context;
+    app_state.pending_direct_peer = peer;
+    app_state.pending_direct_name = name ? name : "";
+    schedule_navigation(PendingNavigation::direct_chat, AppPage::chat);
+}
+
+void request_node_detail(void *, std::uint32_t node)
+{
+    app_state.detail_return_page = app_state.router.page();
+    app_state.pending_node = node;
+    schedule_navigation(PendingNavigation::node_detail, AppPage::node_detail);
+}
+
+void request_map_node(void *, std::uint32_t node)
+{
+    app_state.pending_node = node;
+    schedule_navigation(PendingNavigation::map_node, AppPage::map);
+}
+
 AppNavigationCommands navigation_commands()
 {
-    return {nullptr, request_page, request_back};
+    return {nullptr, request_page, request_back, request_direct_chat, request_node_detail, request_map_node};
 }
 
 void navigation_event(lv_event_t *event)
@@ -177,18 +216,54 @@ void process_navigation(void *user_data)
 
     bool changed = false;
     if (action == PendingNavigation::back) {
-        changed = state->router.back();
+        changed = state->router.page() == AppPage::node_detail
+                      ? state->router.navigate(state->detail_return_page)
+                      : state->router.back();
+    } else if (action == PendingNavigation::node_detail) {
+        if (state->node_detail_view_model) state->node_detail_view_model->select_node(state->pending_node, state->snapshot);
+        changed = state->router.navigate(AppPage::node_detail);
+    } else if (action == PendingNavigation::map_node) {
+        if (state->map_view_model) {
+            state->map_view_model->select_node(state->pending_node);
+            state->map_view_model->follow_selected();
+        }
+        changed = state->router.navigate(AppPage::map);
+    } else if (action == PendingNavigation::direct_chat) {
+        if (state->chat_view_model) {
+            state->chat_view_model->select_conversation(true, state->pending_direct_peer, 0,
+                                                        std::move(state->pending_direct_name));
+        }
+        state->pending_direct_peer = 0;
+        changed                    = state->router.navigate(AppPage::chat);
     } else {
         if (target == AppPage::node_detail && state->nodes_view_model && state->node_detail_view_model) {
+            state->detail_return_page = state->router.page();
             state->node_detail_view_model->select_node(state->nodes_view_model->selected_node(), state->snapshot);
         }
         if (target == AppPage::chat && state->channels_view_model && state->chat_view_model) {
-            if (state->router.page() != AppPage::channels) state->channels_view_model->select_primary();
-            state->chat_view_model->select_channel(state->channels_view_model->selected_channel(),
-                                                   state->channels_view_model->selected_channel_name());
+            if (state->router.page() == AppPage::messages && state->messages_view_model &&
+                state->messages_view_model->has_selected_conversation()) {
+                state->chat_view_model->select_conversation(state->messages_view_model->selected_direct(),
+                                                            state->messages_view_model->selected_peer(),
+                                                            state->messages_view_model->selected_channel(),
+                                                            state->messages_view_model->selected_name());
+            } else if (state->router.page() == AppPage::node_detail && state->node_detail_view_model) {
+                const auto &node = state->node_detail_view_model->presentation();
+                state->chat_view_model->select_conversation(true, state->node_detail_view_model->selected_node(), 0,
+                                                            node.name);
+            } else {
+                if (state->router.page() != AppPage::channels) state->channels_view_model->select_primary();
+                state->chat_view_model->select_channel(state->channels_view_model->selected_channel(),
+                                                       state->channels_view_model->selected_channel_name());
+            }
         }
         changed = state->router.navigate(target);
     }
+    if (state->chat_view_model) {
+        state->chat_view_model->set_active(state->router.page() == AppPage::chat);
+        state->chat_view_model->sync(state->client->snapshot());
+    }
+    if (state->map_view_model) state->map_view_model->set_active(state->router.page() == AppPage::map);
     if (changed) render_page();
 }
 
@@ -238,7 +313,7 @@ void render_page()
             app_state.active_view = std::make_unique<NodesView>(*app_state.nodes_view_model, navigation);
             break;
         case AppPage::map:
-            app_state.active_view = std::make_unique<MapView>(*app_state.map_view_model);
+            app_state.active_view = std::make_unique<MapView>(*app_state.map_view_model, navigation);
             break;
         case AppPage::connect:
             app_state.active_view = std::make_unique<ConnectionView>(*app_state.connection_view_model, navigation);
@@ -277,9 +352,13 @@ void apply_layout()
     app_state.ignore_geometry_scroll_reset = width != app_state.layout_width && page_scroll_y != 0;
     const bool desktop                     = width >= 800;
     const bool show_navigation             = AppRouter::page_has_navigation(app_state.router.page());
+    if (app_state.active_view) app_state.active_view->prepare_layout();
     lv_obj_set_flex_flow(app_state.surface, desktop ? LV_FLEX_FLOW_ROW : LV_FLEX_FLOW_COLUMN);
     lv_obj_set_width(app_state.content, desktop ? 0 : LV_PCT(100));
-    lv_obj_set_height(app_state.content, desktop ? LV_PCT(100) : LV_SIZE_CONTENT);
+    // Keep the content viewport bounded by the surface. A content-sized
+    // parent grows with the chat history and pushes the composer below the
+    // physical display; flex growth gives it the space left by navigation.
+    lv_obj_set_height(app_state.content, desktop ? LV_PCT(100) : 0);
     lv_obj_set_flex_grow(app_state.content, 1);
     if (show_navigation) {
         lv_obj_clear_flag(app_state.navigation, LV_OBJ_FLAG_HIDDEN);
@@ -327,6 +406,8 @@ void apply_layout()
         lv_obj_update_layout(app_state.surface);
         lv_obj_scroll_to_y(app_state.page, page_scroll_y, LV_ANIM_OFF);
     }
+    // Reveal an active editor after LVGL finishes applying the new geometry.
+    if (app_state.active_view) app_state.active_view->update_layout();
     app_state.layout_width    = width;
     app_state.applying_layout = false;
 }
@@ -342,7 +423,31 @@ void refresh_snapshot(lv_timer_t *timer)
     (void)timer;
     if (!app_state.client) return;
     auto snapshot = app_state.client->snapshot();
-    if (snapshot.revision == app_state.rendered_revision) return;
+    if (snapshot.revision == app_state.rendered_revision) {
+        // Administrative readback has its own deadline even on a quiet link.
+        if (app_state.channels_view_model) app_state.channels_view_model->sync(snapshot);
+        if (app_state.device_tools_view_model)
+            app_state.device_tools_view_model->sync(snapshot, app_state.client->enabled());
+        return;
+    }
+    if (snapshot.my_node_number && app_state.last_radio_number &&
+        snapshot.my_node_number != app_state.last_radio_number) {
+        // Close editors while their view models still belong to the previous
+        // radio, then publish the new radio's isolated state.
+        if (app_state.navigation_scheduled) lv_async_call_cancel(process_navigation, &app_state);
+        app_state.navigation_scheduled = false;
+        app_state.pending_navigation = PendingNavigation::none;
+        app_state.pending_node = 0;
+        app_state.pending_direct_peer = 0;
+        app_state.pending_direct_name.clear();
+        app_state.chat_view_model->set_active(false);
+        app_state.map_view_model->set_active(false);
+        app_state.messages_view_model->clear_selection();
+        app_state.nodes_view_model->select_node(0);
+        if (app_state.router.navigate(AppPage::connect)) render_page();
+        app_state.chat_view_model->select_channel(0, "Primary channel");
+    }
+    if (snapshot.my_node_number) app_state.last_radio_number = snapshot.my_node_number;
     app_state.snapshot          = std::move(snapshot);
     app_state.rendered_revision = app_state.snapshot.revision;
     sync_view_models();
@@ -352,17 +457,20 @@ void app_open(const cm0_app_context_t *context)
 {
     if (!context || !context->root) return;
     app_state.router                  = AppRouter{};
+    app_state.detail_return_page      = AppPage::nodes;
     app_state.client                  = std::make_unique<meshtastic::MeshtasticClient>(configured_endpoint);
     app_state.connection_view_model   = std::make_unique<ConnectionViewModel>(app_state.client.get());
     app_state.messages_view_model     = std::make_unique<MessagesViewModel>();
     app_state.nodes_view_model        = std::make_unique<NodesViewModel>();
-    app_state.channels_view_model     = std::make_unique<ChannelsViewModel>();
+    app_state.channels_view_model     = std::make_unique<ChannelsViewModel>(app_state.client.get());
     app_state.chat_view_model         = std::make_unique<ChatViewModel>(app_state.client.get());
-    app_state.node_detail_view_model  = std::make_unique<NodeDetailViewModel>();
-    app_state.device_tools_view_model = std::make_unique<DeviceToolsViewModel>();
+    app_state.node_detail_view_model  = std::make_unique<NodeDetailViewModel>(app_state.client.get());
+    app_state.device_tools_view_model = std::make_unique<DeviceToolsViewModel>(app_state.client.get());
     app_state.map_view_model          = std::make_unique<MapViewModel>();
+    app_state.map_view_model->set_client(app_state.client.get());
     app_state.client->start(configured_auto_connect);
     app_state.snapshot          = app_state.client->snapshot();
+    app_state.last_radio_number = app_state.snapshot.my_node_number;
     app_state.rendered_revision = app_state.snapshot.revision;
     sync_view_models();
 
@@ -398,9 +506,13 @@ void app_close()
     if (app_state.navigation_scheduled) lv_async_call_cancel(process_navigation, &app_state);
     app_state.navigation_scheduled = false;
     app_state.pending_navigation   = PendingNavigation::none;
+    app_state.pending_direct_peer  = 0;
+    app_state.pending_direct_name.clear();
+    app_state.detail_return_page = AppPage::nodes;
     if (app_state.refresh_timer) lv_timer_delete(app_state.refresh_timer);
     app_state.refresh_timer = nullptr;
     if (app_state.client) app_state.client->stop();
+    if (app_state.map_view_model) app_state.map_view_model->set_active(false);
 
     if (app_state.active_view) app_state.active_view->destroy();
     app_state.active_view.reset();
@@ -421,6 +533,7 @@ void app_close()
     app_state.client.reset();
     app_state.snapshot                     = {};
     app_state.rendered_revision            = 0;
+    app_state.last_radio_number = 0;
     app_state.page_scroll_y                = 0;
     app_state.layout_width                 = 0;
     app_state.applying_layout              = false;
@@ -428,6 +541,11 @@ void app_close()
 }
 
 }  // namespace
+
+bool lilygo_ui_meshtastic_layout_in_progress() noexcept
+{
+    return app_state.applying_layout;
+}
 
 void lilygo_ui_meshtastic_configure(std::string host, std::uint16_t port, bool auto_connect)
 {

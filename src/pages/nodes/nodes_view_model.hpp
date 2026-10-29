@@ -10,6 +10,7 @@
 
 struct NodeRowViewModel {
     std::uint32_t number = 0;
+    std::uint32_t last_heard = 0;
     std::string name;
     std::string detail;
     bool local = false;
@@ -26,6 +27,10 @@ public:
 
     void sync(const meshtastic::ClientSnapshot &snapshot);
     void select_node(std::uint32_t number) noexcept;
+    void set_query(std::string query);
+    void set_filter(int filter);
+    [[nodiscard]] const std::string &query() const noexcept;
+    [[nodiscard]] int filter() const noexcept;
 
     [[nodiscard]] bool connected() const noexcept;
     [[nodiscard]] std::uint32_t selected_node() const noexcept;
@@ -43,6 +48,9 @@ private:
     StringSubject<96> footer_;
     std::uint32_t selected_node_ = 0;
     std::vector<NodeRowViewModel> rows_;
+    meshtastic::ClientSnapshot snapshot_;
+    std::string query_;
+    int filter_ = 0;
 };
 
 #endif

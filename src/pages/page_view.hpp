@@ -10,6 +10,8 @@ public:
     virtual ~PageView() = default;
 
     virtual lv_obj_t *create(lv_obj_t *parent) = 0;
+    virtual void prepare_layout() {}
+    virtual void update_layout() {}
     virtual void destroy() noexcept            = 0;
 };
 

@@ -12,9 +12,12 @@ fi
 "$protoc_bin" \
     --proto_path="$project_root/third_party/meshtastic-protobufs" \
     --cpp_out="lite:$project_root/src/generated" \
+    meshtastic/admin.proto \
+    meshtastic/apponly.proto \
     meshtastic/atak.proto \
     meshtastic/channel.proto \
     meshtastic/config.proto \
+    meshtastic/connection_status.proto \
     meshtastic/device_ui.proto \
     meshtastic/module_config.proto \
     meshtastic/portnums.proto \

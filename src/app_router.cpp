@@ -41,7 +41,7 @@ bool AppRouter::page_has_navigation(AppPage page) noexcept
 const char *AppRouter::page_name(AppPage page) noexcept
 {
     static constexpr std::array names{
-        "Messages", "Nodes", "Map", "Connection", "Channels", "LongFast", "Node", "Device Tools",
+        "Messages", "Nodes", "Map", "Status", "Channels", "LongFast", "Node", "Settings",
     };
     const auto index = static_cast<std::size_t>(page);
     return index < names.size() ? names[index] : "Meshtastic";

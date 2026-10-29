@@ -36,6 +36,7 @@ constexpr char kDraft[] =
 
 std::vector<lv_color32_t> framebuffer;
 int display_width = 0;
+std::string preview_prefix;
 
 template <typename MessageType>
 std::vector<std::uint8_t> serialize(const MessageType &message)
@@ -134,7 +135,10 @@ std::vector<std::uint8_t> make_radio_snapshot(std::uint32_t config_id)
         packet->set_from(0x87654321U);
         packet->set_to(meshtastic::kBroadcastNode);
         packet->set_id(1000U + index);
-        packet->set_channel(index % 2U);
+        // Keep the primary conversation long enough to exercise scroll and
+        // rotation persistence; the secondary channel is still present above
+        // for the channel list and selection checks.
+        packet->set_channel(0);
         packet->set_rx_time(static_cast<std::uint32_t>(std::time(nullptr) - index * 20U));
         packet->set_rx_rssi(-72 - static_cast<std::int32_t>(index));
         packet->set_rx_snr(6.5F);
@@ -228,6 +232,80 @@ bool write_ppm(const char *path, int width, int height)
     return file.good();
 }
 
+void capture_preview(const char *suffix)
+{
+    lv_obj_update_layout(lv_screen_active());
+    lv_obj_invalidate(lv_screen_active());
+    lv_refr_now(nullptr);
+    const auto path = preview_prefix + "-" + suffix + ".ppm";
+    assert(write_ppm(path.c_str(), display_width, lv_display_get_vertical_resolution(nullptr)));
+}
+
+void press_software_key(lv_obj_t *keyboard, const char *text)
+{
+    for (std::uint32_t index = 0; index < 100; ++index) {
+        const char *key = lv_buttonmatrix_get_button_text(keyboard, index);
+        if (!key) break;
+        if (std::strcmp(key, text) != 0) continue;
+        lv_buttonmatrix_set_selected_button(keyboard, index);
+        assert(lv_obj_send_event(keyboard, LV_EVENT_VALUE_CHANGED, nullptr) == LV_RESULT_OK);
+        return;
+    }
+    assert(false && "software key missing");
+}
+
+void click_composer(lv_obj_t *composer)
+{
+    lv_obj_add_state(composer, LV_STATE_PRESSED);
+    assert(lv_obj_send_event(composer, LV_EVENT_CLICKED, nullptr) == LV_RESULT_OK);
+    lv_obj_clear_state(composer, LV_STATE_PRESSED);
+}
+
+void assert_fully_visible(lv_obj_t *object)
+{
+    assert(object && lv_obj_is_visible(object));
+    lv_area_t object_area{};
+    lv_obj_get_coords(object, &object_area);
+    for (lv_obj_t *ancestor = lv_obj_get_parent(object); ancestor; ancestor = lv_obj_get_parent(ancestor)) {
+        if (lv_obj_has_flag(ancestor, LV_OBJ_FLAG_OVERFLOW_VISIBLE)) continue;
+        lv_area_t ancestor_area{};
+        lv_obj_get_coords(ancestor, &ancestor_area);
+        const bool contained = object_area.x1 >= ancestor_area.x1 && object_area.y1 >= ancestor_area.y1 &&
+                               object_area.x2 <= ancestor_area.x2 && object_area.y2 <= ancestor_area.y2;
+        assert(contained);
+    }
+    assert(object_area.x1 >= 0 && object_area.y1 >= 0);
+    assert(object_area.x2 < lv_display_get_horizontal_resolution(nullptr));
+    assert(object_area.y2 < lv_display_get_vertical_resolution(nullptr));
+}
+
+void assert_chat_composer_visible(lv_obj_t *root)
+{
+    lv_obj_update_layout(root);
+    lv_obj_t *composer = lv_obj_find_by_name(root, "chat_composer_input");
+    lv_obj_t *send = lv_obj_find_by_name(root, "chat_send");
+    assert(composer && send);
+    assert_fully_visible(lv_obj_get_parent(composer));
+    assert_fully_visible(composer);
+    assert_fully_visible(send);
+}
+
+void assert_editor_visible(lv_obj_t *editor, lv_obj_t *keyboard)
+{
+    lv_obj_update_layout(lv_screen_active());
+    assert_fully_visible(editor);
+    assert_fully_visible(keyboard);
+    lv_area_t editor_area{}, keyboard_area{};
+    lv_obj_get_coords(editor, &editor_area);
+    lv_obj_get_coords(keyboard, &keyboard_area);
+    if (editor_area.y1 < 0 || editor_area.y2 >= keyboard_area.y1)
+        std::fprintf(stderr, "editor %s y=[%d,%d] keyboard y=[%d,%d]\n",
+                     lv_obj_get_name(editor), editor_area.y1, editor_area.y2, keyboard_area.y1, keyboard_area.y2);
+    assert(editor_area.y1 >= 0);
+    assert(editor_area.y2 < keyboard_area.y1);
+    assert(keyboard_area.y2 < lv_display_get_vertical_resolution(nullptr));
+}
+
 lv_obj_t *find_label_containing(lv_obj_t *root, std::string_view text)
 {
     if (lv_obj_has_class(root, &lv_label_class)) {
@@ -304,6 +382,7 @@ lv_obj_t *click_and_wait(lv_obj_t *trigger, lv_obj_t *root, const char *expected
     });
     lv_obj_t *page_after = lv_obj_find_by_name(root, "page_body");
     assert(page_after && is_descendant_of(marker, page_after));
+    capture_preview(expected_name);
     return marker;
 }
 
@@ -321,6 +400,12 @@ void assert_horizontal_label_bounds(lv_obj_t *root)
     if (lv_obj_has_class(root, &lv_label_class) && lv_obj_is_visible(root)) {
         lv_obj_t *parent = lv_obj_get_parent(root);
         assert(parent);
+        // LVGL keeps a one-line textarea's text wider than its viewport and
+        // scrolls the label with the cursor. Its enclosing editor still has
+        // to pass the visibility checks, but this internal label may overflow.
+        if (lv_obj_has_class(parent, &lv_textarea_class) && lv_textarea_get_one_line(parent) &&
+            lv_textarea_get_label(parent) == root)
+            return;
         lv_area_t label_area{};
         lv_area_t parent_content{};
         lv_obj_get_coords(root, &label_area);
@@ -401,7 +486,6 @@ void assert_primary_layout(lv_obj_t *root, int width, int height)
     assert(surface && content && navigation);
     assert(lv_obj_get_width(surface) == width);
     assert(lv_obj_get_height(surface) == height);
-    if (lv_obj_has_flag(navigation, LV_OBJ_FLAG_HIDDEN)) return;
 
     lv_area_t surface_area{};
     lv_area_t content_area{};
@@ -411,6 +495,9 @@ void assert_primary_layout(lv_obj_t *root, int width, int height)
     lv_obj_get_coords(navigation, &navigation_area);
     assert(content_area.x1 >= surface_area.x1 && content_area.y1 >= surface_area.y1);
     assert(content_area.x2 <= surface_area.x2 && content_area.y2 <= surface_area.y2);
+    // Detail pages hide navigation too; their content must still fit the
+    // viewport before any focus event can scroll an offscreen editor into view.
+    if (lv_obj_has_flag(navigation, LV_OBJ_FLAG_HIDDEN)) return;
     assert(navigation_area.x1 >= surface_area.x1 && navigation_area.y1 >= surface_area.y1);
     assert(navigation_area.x2 <= surface_area.x2 && navigation_area.y2 <= surface_area.y2);
     assert(!areas_overlap(content_area, navigation_area));
@@ -438,6 +525,8 @@ void resize_display(lv_display_t *display, lv_obj_t *root, int width, int height
     display_width = width;
     std::fill(framebuffer.begin(), framebuffer.end(), lv_color32_t{});
     lv_display_set_resolution(display, width, height);
+    lv_obj_update_layout(root);
+    pump_lvgl(10);
     lv_obj_update_layout(root);
     lv_obj_invalidate(root);
     lv_refr_now(display);
@@ -476,6 +565,9 @@ int main(int argc, char **argv)
     const int rotated_width  = initial_height;
     const int rotated_height = initial_width;
 
+    preview_prefix = argv[3];
+    setenv("LILYGO_MESHTASTIC_DB_PATH", ":memory:", 1);
+    setenv("LILYGO_MESHTASTIC_MAP_DISABLE_NETWORK", "1", 1);
     FakeRadio radio;
     display_width = initial_width;
     framebuffer.resize(static_cast<std::size_t>(initial_width) * static_cast<std::size_t>(initial_height));
@@ -518,23 +610,54 @@ int main(int argc, char **argv)
     assert_horizontal_label_bounds(lv_obj_find_by_name(context.root, "page_body"));
     assert_minimum_hit_targets(lv_obj_find_by_name(context.root, "page_body"));
 
-    lv_obj_t *brightness_slider = lv_obj_find_by_name(context.root, "brightness_slider");
-    lv_obj_t *brightness_value  = lv_obj_find_by_name(context.root, "brightness_value");
-    assert(brightness_slider && brightness_value);
-    lv_slider_set_value(brightness_slider, 55, LV_ANIM_OFF);
-    assert(lv_obj_send_event(brightness_slider, LV_EVENT_VALUE_CHANGED, nullptr) == LV_RESULT_OK);
-    assert(std::string_view(lv_label_get_text(brightness_value)).find("55%") != std::string_view::npos);
+    assert(lv_obj_find_by_name(context.root, "connection_settings") == nullptr);
+    assert(lv_obj_find_by_name(context.root, "connection_device_tools"));
 
     click_and_wait(button_for_label(context.root, "Device tools"), context.root, "device_tools");
-    assert(find_label_containing(context.root, "0x94 0xC3"));
-    click_and_wait(button_for_label(context.root, LV_SYMBOL_LEFT), context.root, "connection_settings");
+    assert(lv_obj_find_by_name(context.root, "settings_configuration_catalog"));
+    assert(lv_obj_find_by_name(context.root, "settings_region_dropdown"));
+    assert(lv_obj_find_by_name(context.root, "settings_modem_dropdown"));
+    assert(lv_obj_find_by_name(context.root, "settings_role_dropdown"));
+    assert(lv_obj_find_by_name(context.root, "settings_node_name_input"));
+    assert(lv_obj_find_by_name(context.root, "settings_software_keyboard"));
+    assert(lv_obj_find_by_name(context.root, "settings_save_configuration"));
+    auto *owner_input = lv_obj_find_by_name(context.root, "settings_node_name_input");
+    auto *owner_keyboard = lv_obj_find_by_name(context.root, "settings_software_keyboard");
+    const std::string owner_before = lv_textarea_get_text(owner_input);
+    assert(lv_obj_send_event(owner_input, LV_EVENT_FOCUSED, nullptr) == LV_RESULT_OK);
+    assert_editor_visible(owner_input, owner_keyboard);
+    press_software_key(owner_keyboard, "a");
+    assert(std::string(lv_textarea_get_text(owner_input)) != owner_before);
+    capture_preview("settings-keyboard");
+    press_software_key(owner_keyboard, LV_SYMBOL_KEYBOARD);
+    assert(lv_obj_has_flag(owner_keyboard, LV_OBJ_FLAG_HIDDEN));
+    assert(std::string(lv_textarea_get_text(owner_input)) == owner_before);
+    assert(lv_obj_send_event(owner_input, LV_EVENT_CLICKED, nullptr) == LV_RESULT_OK);
+    assert(!lv_obj_has_flag(owner_keyboard, LV_OBJ_FLAG_HIDDEN));
+    unsigned owner_ready_count = 0;
+    lv_obj_add_event_cb(owner_input, [](lv_event_t *e) {
+        ++*static_cast<unsigned *>(lv_event_get_user_data(e));
+    }, LV_EVENT_READY, &owner_ready_count);
+    press_software_key(owner_keyboard, LV_SYMBOL_OK);
+    assert(owner_ready_count == 1);
+    assert(lv_obj_has_flag(owner_keyboard, LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_send_event(owner_input, LV_EVENT_CLICKED, nullptr) == LV_RESULT_OK);
+    press_software_key(owner_keyboard, LV_SYMBOL_NEW_LINE);
+    assert(owner_ready_count == 2);
+    assert(lv_obj_has_flag(owner_keyboard, LV_OBJ_FLAG_HIDDEN));
+    click_and_wait(button_for_label(context.root, LV_SYMBOL_LEFT), context.root, "connection_device_tools");
 
     click_and_wait(navigation_button(context.root, "nav_messages"), context.root, "messages_list");
     lv_obj_t *sender  = find_label_containing(context.root, kLongNodeName);
     lv_obj_t *message = find_label_containing(context.root, "field report wraps");
     assert(sender && message);
     assert_cjk_fallback(sender);
-    assert_info_row_layout(sender);
+    auto *conversation_row = lv_obj_find_by_name(context.root, "message_conversation");
+    assert(conversation_row);
+    auto *conversation_text = lv_obj_get_child(conversation_row, 1);
+    auto *conversation_title = conversation_text ? lv_obj_get_child(conversation_text, 0) : nullptr;
+    assert(conversation_title && lv_obj_has_class(conversation_title, &lv_label_class));
+    assert_info_row_layout(conversation_title);
     assert_horizontal_label_bounds(lv_obj_find_by_name(context.root, "messages_list"));
     assert_minimum_hit_targets(lv_obj_find_by_name(context.root, "page_body"));
 
@@ -549,12 +672,41 @@ int main(int argc, char **argv)
 
     lv_obj_t *compose = lv_obj_find_by_name(context.root, "messages_compose");
     click_and_wait(compose, context.root, "chat_composer_input");
-    lv_obj_t *chat_page     = lv_obj_find_by_name(context.root, "page_body");
-    lv_obj_t *chat_messages = lv_obj_find_by_name(context.root, "chat_messages");
-    lv_obj_t *composer      = lv_obj_find_by_name(context.root, "chat_composer_input");
-    lv_obj_t *send          = lv_obj_find_by_name(context.root, "chat_send");
-    assert(chat_page && chat_messages && composer && send);
+    lv_obj_t *chat_page         = lv_obj_find_by_name(context.root, "page_body");
+    lv_obj_t *chat_messages     = lv_obj_find_by_name(context.root, "chat_messages");
+    lv_obj_t *composer          = lv_obj_find_by_name(context.root, "chat_composer_input");
+    lv_obj_t *send              = lv_obj_find_by_name(context.root, "chat_send");
+    lv_obj_t *software_keyboard = lv_obj_find_by_name(context.root, "chat_software_keyboard");
+    assert(chat_page && chat_messages && composer && send && software_keyboard);
     assert(lv_obj_has_class(composer, &lv_textarea_class));
+    assert(lv_obj_has_flag(software_keyboard, LV_OBJ_FLAG_HIDDEN));
+    // The page itself stays fixed while the message history owns the only
+    // scrollable region, so the composer remains reachable with long chats.
+    assert(!lv_obj_has_flag(chat_page, LV_OBJ_FLAG_SCROLLABLE));
+    assert(lv_obj_has_flag(chat_messages, LV_OBJ_FLAG_SCROLLABLE));
+    assert_primary_layout(context.root, initial_width, initial_height);
+    assert_chat_composer_visible(context.root);
+    click_composer(composer);
+    assert(!lv_obj_has_flag(software_keyboard, LV_OBJ_FLAG_HIDDEN));
+    assert_editor_visible(composer, software_keyboard);
+    press_software_key(software_keyboard, "a");
+    assert(std::strcmp(lv_textarea_get_text(composer), "a") == 0);
+    capture_preview("chat-keyboard");
+    assert(lv_obj_send_event(software_keyboard, LV_EVENT_CANCEL, nullptr) == LV_RESULT_OK);
+    assert(lv_obj_has_flag(software_keyboard, LV_OBJ_FLAG_HIDDEN));
+    assert(std::strcmp(lv_textarea_get_text(composer), "a") == 0);
+    click_composer(composer);
+    assert(!lv_obj_has_flag(software_keyboard, LV_OBJ_FLAG_HIDDEN));
+    unsigned chat_ready_count = 0;
+    lv_obj_add_event_cb(composer, [](lv_event_t *e) {
+        ++*static_cast<unsigned *>(lv_event_get_user_data(e));
+    }, LV_EVENT_READY, &chat_ready_count);
+    press_software_key(software_keyboard, LV_SYMBOL_OK);
+    assert(chat_ready_count == 1);
+    assert(std::strcmp(lv_textarea_get_text(composer), "") == 0);
+    assert(lv_obj_has_flag(software_keyboard, LV_OBJ_FLAG_HIDDEN));
+    assert_chat_composer_visible(context.root);
+    lv_obj_scroll_to_y(chat_page, 0, LV_ANIM_OFF);
     assert(find_label_containing(chat_messages, "field report wraps"));
     assert_horizontal_label_bounds(chat_page);
 
@@ -566,15 +718,34 @@ int main(int argc, char **argv)
     lv_group_add_obj(focus_group, composer);
     lv_group_focus_obj(composer);
     assert(lv_group_get_focused(focus_group) == composer);
+    assert(lv_obj_send_event(software_keyboard, LV_EVENT_CANCEL, nullptr) == LV_RESULT_OK);
+    lv_obj_update_layout(context.root);
+    lv_obj_scroll_to_y(chat_page, 0, LV_ANIM_OFF);
 
     lv_obj_update_layout(context.root);
+    // A new conversation opens at its latest message. Move to the start so
+    // the fixture exercises downward scrolling in every viewport.
+    lv_obj_scroll_to_y(chat_messages, 0, LV_ANIM_OFF);
+    lv_obj_update_layout(context.root);
     lv_obj_t *scroll_target = find_scroll_target(chat_messages);
-    if (!scroll_target) scroll_target = find_scroll_target(chat_page);
-    assert(scroll_target);
+    assert(scroll_target == chat_messages);
+    lv_obj_t *composer_bar = lv_obj_get_parent(composer);
+    assert(composer_bar);
+    lv_obj_update_layout(context.root);
+    lv_area_t page_area{}, composer_before_scroll{};
+    lv_obj_get_coords(chat_page, &page_area);
+    lv_obj_get_coords(composer_bar, &composer_before_scroll);
+    assert(composer_before_scroll.y1 >= page_area.y1);
+    assert(composer_before_scroll.y2 <= page_area.y2);
     lv_obj_scroll_to_y(scroll_target, 64, LV_ANIM_OFF);
     lv_obj_update_layout(context.root);
     const auto scroll_before = lv_obj_get_scroll_y(scroll_target);
     assert(scroll_before > 0);
+    lv_area_t composer_after_scroll{};
+    lv_obj_get_coords(composer_bar, &composer_after_scroll);
+    assert(composer_after_scroll.y1 == composer_before_scroll.y1);
+    assert(composer_after_scroll.y2 == composer_before_scroll.y2);
+    assert_chat_composer_visible(context.root);
 
     resize_display(display, context.root, rotated_width, rotated_height);
     assert(lv_obj_find_by_name(context.root, "page_body") == chat_page);
@@ -583,6 +754,7 @@ int main(int argc, char **argv)
     assert(std::strcmp(lv_textarea_get_text(composer), kDraft) == 0);
     assert(lv_textarea_get_cursor_pos(composer) == cursor_before);
     assert(lv_group_get_focused(focus_group) == composer);
+    assert_chat_composer_visible(context.root);
     if (lv_obj_get_scroll_y(scroll_target) != scroll_before) {
         std::fprintf(stderr, "scroll changed: before=%d after=%d target=%s bottom=%d\n", scroll_before,
                      lv_obj_get_scroll_y(scroll_target), lv_obj_get_name(scroll_target),
@@ -590,6 +762,19 @@ int main(int argc, char **argv)
     }
     assert(lv_obj_get_scroll_y(scroll_target) == scroll_before);
     assert_horizontal_label_bounds(chat_page);
+    click_composer(composer);
+    assert_editor_visible(composer, software_keyboard);
+    assert(std::strcmp(lv_textarea_get_text(composer), kDraft) == 0);
+    capture_preview("chat-keyboard-rotated");
+    resize_display(display, context.root, initial_width, initial_height);
+    assert_editor_visible(composer, software_keyboard);
+    assert(std::strcmp(lv_textarea_get_text(composer), kDraft) == 0);
+    assert(lv_textarea_get_cursor_pos(composer) == cursor_before);
+    assert(lv_group_get_focused(focus_group) == composer);
+    // The runtime Enter path uses the same command as the send button; this
+    // synthetic event keeps the render test independent of keyboard hardware.
+    assert(lv_group_send_data(focus_group, LV_KEY_ENTER) == LV_RESULT_OK);
+    assert(std::strcmp(lv_textarea_get_text(composer), "") == 0);
     lv_group_delete(focus_group);
 
     click_and_wait(button_for_label(context.root, LV_SYMBOL_LEFT), context.root, "messages_list");
@@ -606,21 +791,50 @@ int main(int argc, char **argv)
     assert_cjk_fallback(detail_name);
     assert(find_label_containing(context.root, "0x87654321"));
     assert_horizontal_label_bounds(lv_obj_find_by_name(context.root, "node_detail"));
-    click_and_wait(button_for_label(context.root, LV_SYMBOL_LEFT), context.root, "nodes_list");
+    auto *share_waypoint = lv_obj_find_by_name(context.root, "node_share_waypoint");
+    auto *waypoint_editor = lv_obj_find_by_name(context.root, "waypoint_editor");
+    assert(share_waypoint && waypoint_editor && lv_obj_has_flag(waypoint_editor, LV_OBJ_FLAG_HIDDEN));
+    lv_obj_send_event(share_waypoint, LV_EVENT_CLICKED, nullptr);
+    assert(!lv_obj_has_flag(waypoint_editor, LV_OBJ_FLAG_HIDDEN));
+    auto *latitude = lv_obj_find_by_name(waypoint_editor, "waypoint_latitude");
+    auto *longitude = lv_obj_find_by_name(waypoint_editor, "waypoint_longitude");
+    auto *waypoint_name = lv_obj_find_by_name(waypoint_editor, "waypoint_name");
+    assert(latitude && longitude && waypoint_name);
+    assert(std::string(lv_textarea_get_text(latitude)) == "31.2304000");
+    assert(std::string(lv_textarea_get_text(longitude)) == "121.4737000");
+    assert(std::string(lv_textarea_get_text(waypoint_name)).size() <= 30);
+    lv_textarea_set_text(latitude, "bad");
+    lv_obj_send_event(lv_obj_find_by_name(waypoint_editor, "waypoint_send"), LV_EVENT_CLICKED, nullptr);
+    assert(!lv_obj_has_flag(waypoint_editor, LV_OBJ_FLAG_HIDDEN));
+    auto *cancel_waypoint = button_for_label(waypoint_editor, "Cancel");
+    assert(cancel_waypoint);
+    lv_obj_send_event(cancel_waypoint, LV_EVENT_CLICKED, nullptr);
+    assert(lv_obj_has_flag(waypoint_editor, LV_OBJ_FLAG_HIDDEN));
+    click_and_wait(lv_obj_find_by_name(context.root, "node_message"), context.root, "chat_composer_input");
+    assert(find_label_containing(context.root, kLongNodeName));
+    assert(!find_label_containing(context.root, kPrimaryChannel));
+    click_and_wait(button_for_label(context.root, LV_SYMBOL_LEFT), context.root, "messages_list");
+    click_and_wait(navigation_button(context.root, "nav_nodes"), context.root, "nodes_list");
 
     click_and_wait(navigation_button(context.root, "nav_map"), context.root, "map_canvas");
     assert(find_label_containing(context.root, "Offline map ready"));
-    assert(find_label_containing(context.root, kLongNodeName));
-    click_and_wait(navigation_button(context.root, "nav_connect"), context.root, "connection_settings");
+    auto *map_marker = lv_obj_find_by_name(context.root, "map_node_marker");
+    assert(map_marker);
+    lv_obj_send_event(map_marker, LV_EVENT_CLICKED, nullptr);
+    lv_timer_handler();
+    auto *map_details = lv_obj_find_by_name(context.root, "map_node_details");
+    assert(map_details);
+    lv_obj_send_event(map_details, LV_EVENT_CLICKED, nullptr);
+    wait_until([&] { return lv_obj_find_by_name(context.root, "node_detail") != nullptr; });
+    assert(lv_obj_find_by_name(context.root, "node_detail"));
+    click_and_wait(button_for_label(context.root, LV_SYMBOL_LEFT), context.root, "map_canvas");
+    click_and_wait(navigation_button(context.root, "nav_connect"), context.root, "connection_device_tools");
 
     page = lv_obj_find_by_name(context.root, "page_body");
     resize_display(display, context.root, initial_width, initial_height);
     assert(lv_obj_find_by_name(context.root, "page_body") == page);
-    brightness_slider = lv_obj_find_by_name(context.root, "brightness_slider");
-    brightness_value  = lv_obj_find_by_name(context.root, "brightness_value");
-    assert(brightness_slider && brightness_value);
-    assert(lv_slider_get_value(brightness_slider) == 55);
-    assert(std::string_view(lv_label_get_text(brightness_value)).find("55%") != std::string_view::npos);
+    assert(lv_obj_find_by_name(context.root, "connection_settings") == nullptr);
+    assert(lv_obj_find_by_name(context.root, "connection_device_tools"));
     assert_minimum_hit_targets(lv_obj_find_by_name(context.root, "page_body"));
 
     std::fill(framebuffer.begin(), framebuffer.end(), lv_color32_t{});

@@ -78,6 +78,7 @@ lv_obj_t *make_dot(lv_obj_t *parent, std::uint32_t color, int size)
     lv_obj_t *dot = lv_obj_create(parent);
     style_container(dot, color, LV_RADIUS_CIRCLE);
     lv_obj_set_size(dot, size, size);
+    lv_obj_set_style_pad_all(dot, 0, 0);
     lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
     return dot;
 }
@@ -144,19 +145,54 @@ lv_obj_t *make_info_row(lv_obj_t *parent, std::uint32_t dot_color, const char *t
     lv_obj_set_height(row, LV_SIZE_CONTENT);
     lv_obj_set_style_min_height(row, 82, 0);
     lv_obj_set_style_pad_all(row, 0, 0);
+    // Keep the content centered even when LVGL resolves LV_SIZE_CONTENT before
+    // applying the row's minimum height. The vertical inset also expands with
+    // wrapped labels, so long node names remain balanced inside the focus ring.
+    lv_obj_set_style_pad_ver(row, 18, 0);
     lv_obj_set_style_pad_column(row, 14, 0);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    if (dot_color) make_dot(row, dot_color, 46);
+    if (dot_color) {
+        lv_obj_t *avatar = make_dot(row, dot_color, 46);
+        // Contact-style rows are easier to scan when the status dot also
+        // carries a compact identity cue. Keep the cue deliberately short so
+        // long node names never affect the row geometry.
+        const char *name = title ? title : "";
+        char initials[3] = {0, 0, 0};
+        if (name[0] && static_cast<unsigned char>(name[0]) < 0x80U) {
+            initials[0] = name[0];
+            if (name[1] && static_cast<unsigned char>(name[1]) < 0x80U) initials[1] = name[1];
+        } else if (name[0]) {
+            initials[0] = '*';
+        }
+        if (initials[0]) {
+            std::uint32_t avatar_text_color = COLOR_TEXT;
+            if (dot_color == COLOR_BLUE) {
+                avatar_text_color = COLOR_SURFACE;
+            } else if (dot_color == COLOR_GREEN || dot_color == COLOR_GREEN_LIGHT) {
+                avatar_text_color = COLOR_GREEN_DARK;
+            } else if (dot_color == COLOR_PALE_BLUE) {
+                avatar_text_color = COLOR_BLUE;
+            }
+            lv_obj_t *avatar_label = make_label(avatar, initials, 14, avatar_text_color);
+            lv_label_set_long_mode(avatar_label, LV_LABEL_LONG_CLIP);
+            lv_obj_set_style_text_align(avatar_label, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_center(avatar_label);
+        }
+    }
     lv_obj_t *text = make_flex(row, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_width(text, 0);
     lv_obj_set_flex_grow(text, 1);
     lv_obj_set_height(text, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_row(text, 2, 0);
-    make_wrapped_label(text, title, 14, COLOR_TEXT);
-    make_wrapped_label(text, detail, 14, COLOR_SECONDARY);
+    lv_obj_t *title_label  = make_wrapped_label(text, title, 14, COLOR_TEXT);
+    lv_obj_t *detail_label = make_wrapped_label(text, detail, 14, COLOR_SECONDARY);
+    lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_align(detail_label, LV_TEXT_ALIGN_LEFT, 0);
     if (callback) {
-        make_label(row, LV_SYMBOL_RIGHT, 22, COLOR_SEPARATOR);
+        lv_obj_t *arrow = make_label(row, LV_SYMBOL_RIGHT, 22, COLOR_SEPARATOR);
+        lv_obj_set_width(arrow, 24);
+        lv_obj_set_style_text_align(arrow, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_add_event_cb(row, callback, LV_EVENT_CLICKED, user_data);
     }
     return row;

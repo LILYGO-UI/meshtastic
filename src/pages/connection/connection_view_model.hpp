@@ -31,12 +31,18 @@ public:
     [[nodiscard]] lv_subject_t *config_status_subject() noexcept;
     [[nodiscard]] lv_subject_t *device_detail_subject() noexcept;
     [[nodiscard]] lv_subject_t *device_name_subject() noexcept;
+    [[nodiscard]] lv_subject_t *device_role_subject() noexcept;
+    [[nodiscard]] lv_subject_t *firmware_subject() noexcept;
     [[nodiscard]] lv_subject_t *endpoint_subject() noexcept;
     [[nodiscard]] lv_subject_t *last_activity_detail_subject() noexcept;
     [[nodiscard]] lv_subject_t *last_activity_title_subject() noexcept;
     [[nodiscard]] lv_subject_t *primary_channel_subject() noexcept;
     [[nodiscard]] lv_subject_t *status_subject() noexcept;
     [[nodiscard]] lv_subject_t *tcp_state_subject() noexcept;
+    [[nodiscard]] lv_subject_t *uptime_subject() noexcept;
+    [[nodiscard]] lv_subject_t *online_nodes_subject() noexcept;
+    [[nodiscard]] lv_subject_t *lora_band_subject() noexcept;
+    [[nodiscard]] lv_subject_t *node_id_subject() noexcept;
 
 private:
     meshtastic::MeshtasticClient *client_ = nullptr;
@@ -51,12 +57,18 @@ private:
     StringSubject<32> config_status_;
     StringSubject<256> device_detail_;
     StringSubject<96> device_name_;
+    StringSubject<48> device_role_;
+    StringSubject<64> firmware_;
     StringSubject<128> endpoint_;
     StringSubject<160> last_activity_detail_;
     StringSubject<128> last_activity_title_;
     StringSubject<96> primary_channel_;
     StringSubject<192> status_;
     StringSubject<40> tcp_state_;
+    StringSubject<48> uptime_;
+    StringSubject<32> online_nodes_;
+    StringSubject<96> lora_band_;
+    StringSubject<32> node_id_;
 };
 
 #endif

@@ -1,12 +1,25 @@
 #include "domain/meshtastic_client.hpp"
 
 #include <chrono>
+#include <charconv>
 #include <cstdio>
+#include <cstring>
+#include <string>
 #include <thread>
 
-int main()
+int main(int argc, char **argv)
 {
-    meshtastic::MeshtasticClient client({meshtastic::kDefaultTcpHost, meshtastic::kDefaultTcpPort});
+    meshtastic::Endpoint endpoint;
+    if (argc > 1) endpoint.host = argv[1];
+    if (argc > 2) {
+        unsigned parsed = 0;
+        const auto *begin = argv[2];
+        const auto *end = begin + std::strlen(begin);
+        const auto result = std::from_chars(begin, end, parsed);
+        if (result.ec != std::errc{} || result.ptr != end || parsed == 0 || parsed > 65535) return 2;
+        endpoint.port = static_cast<std::uint16_t>(parsed);
+    }
+    meshtastic::MeshtasticClient client(endpoint);
     client.start();
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);

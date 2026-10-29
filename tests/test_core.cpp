@@ -1,5 +1,6 @@
 #include "domain/meshtastic_client.hpp"
 #include "domain/meshtastic_protocol.hpp"
+#include "persistence/meshtastic_repository.hpp"
 
 #include <meshtastic/mesh.pb.h>
 
@@ -21,6 +22,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include <filesystem>
 
 namespace {
 
@@ -52,6 +54,38 @@ void test_encoding()
     assert(decoded.packet().decoded().payload() == "hello");
     assert(meshtastic::encode_text_message("", 1).empty());
     assert(meshtastic::encode_text_message(std::string(meshtastic::kMaxTextPayload + 1, 'x'), 1).empty());
+
+    meshtastic::ToRadio heartbeat;
+    const auto heartbeat_bytes = meshtastic::encode_heartbeat(7);
+    assert(heartbeat.ParseFromArray(heartbeat_bytes.data(), static_cast<int>(heartbeat_bytes.size())));
+    assert(heartbeat.has_heartbeat());
+    assert(heartbeat.heartbeat().nonce() == 7);
+
+    meshtastic::ToRadio generic;
+    generic.set_disconnect(true);
+    const auto generic_bytes = meshtastic::encode_to_radio(generic);
+    meshtastic::ToRadio generic_decoded;
+    std::string decode_error;
+    assert(meshtastic::decode_to_radio(generic_bytes, generic_decoded, decode_error));
+    assert(decode_error.empty());
+    assert(generic_decoded.disconnect());
+
+    meshtastic::AdminMessage admin;
+    admin.set_session_passkey("session-key");
+    admin.mutable_set_config()->mutable_lora()->set_region(meshtastic::Config::LoRaConfig::CN);
+    const auto admin_bytes = meshtastic::encode_admin_message(admin, 0x12345678U, 9);
+    meshtastic::ToRadio admin_radio;
+    assert(meshtastic::decode_to_radio(admin_bytes, admin_radio, decode_error));
+    assert(admin_radio.has_packet());
+    assert(admin_radio.packet().to() == 0x12345678U);
+    assert(admin_radio.packet().id() == 9);
+    assert(admin_radio.packet().decoded().portnum() == meshtastic::ADMIN_APP);
+
+    meshtastic::AdminMessage decoded_admin;
+    assert(decoded_admin.ParseFromString(admin_radio.packet().decoded().payload()));
+    assert(decoded_admin.session_passkey() == "session-key");
+    assert(decoded_admin.has_set_config());
+    assert(decoded_admin.set_config().lora().region() == meshtastic::Config::LoRaConfig::CN);
 }
 
 void test_framing()
@@ -86,11 +120,14 @@ void test_node_decode()
     node->mutable_user()->set_id("!12345678");
     node->mutable_user()->set_long_name("Ridge Relay");
     node->mutable_user()->set_short_name("RR");
+    node->mutable_user()->set_role(meshtastic::Config::DeviceConfig::ROUTER);
     node->mutable_position()->set_latitude_i(473769000);
     node->mutable_position()->set_longitude_i(85417000);
     node->mutable_position()->set_altitude(1482);
     node->mutable_device_metrics()->set_battery_level(82);
     node->mutable_device_metrics()->set_voltage(4.08F);
+    node->mutable_device_metrics()->set_uptime_seconds(86400U);
+    node->set_via_mqtt(true);
     node->set_snr(5.5F);
     node->set_last_heard(1700000000U);
     node->set_hops_away(2);
@@ -101,12 +138,30 @@ void test_node_decode()
     assert(error.empty() && decoded.node);
     assert(decoded.node->number == 0x12345678U);
     assert(decoded.node->long_name == "Ridge Relay");
+    assert(decoded.node->role == meshtastic::Config::DeviceConfig::ROUTER);
     assert(decoded.node->battery_level == 82);
+    assert(decoded.node->uptime_seconds == 86400U);
+    assert(decoded.node->via_mqtt);
     assert(decoded.node->hops_away == 2);
     assert(std::fabs(decoded.node->snr - 5.5F) < 0.001F);
     assert(std::fabs(*decoded.node->latitude - 47.3769) < 0.00001);
     assert(std::fabs(*decoded.node->longitude - 8.5417) < 0.00001);
     assert(decoded.node->altitude == 1482);
+}
+
+void test_my_info_decode()
+{
+    meshtastic::FromRadio from_radio;
+    auto *my_info = from_radio.mutable_my_info();
+    my_info->set_my_node_num(0x01020304U);
+    my_info->set_nodedb_count(17U);
+
+    meshtastic::RadioUpdate decoded;
+    std::string error;
+    assert(meshtastic::decode_from_radio(serialize(from_radio), decoded, error));
+    assert(decoded.my_node_number == 0x01020304U);
+    assert(decoded.my_info);
+    assert(decoded.my_info->nodedb_count() == 17U);
 }
 
 void test_text_and_handshake_decode()
@@ -130,6 +185,7 @@ void test_text_and_handshake_decode()
     assert(decoded.text_message->from == 0x12345678U);
     assert(decoded.text_message->rssi == -73);
     assert(std::fabs(decoded.text_message->snr - 8.5F) < 0.001F);
+    assert(decoded.raw && decoded.raw->has_packet());
 
     meshtastic::FromRadio complete;
     complete.set_config_complete_id(1234);
@@ -139,6 +195,48 @@ void test_text_and_handshake_decode()
     const std::vector<std::uint8_t> truncated{0x22, 0x05, 0x08};
     assert(!meshtastic::decode_from_radio(truncated, decoded, error));
     assert(!error.empty());
+}
+
+void test_local_stats_decode()
+{
+    meshtastic::Telemetry telemetry;
+    telemetry.mutable_local_stats()->set_uptime_seconds(3210U);
+    meshtastic::FromRadio from_radio;
+    auto *packet = from_radio.mutable_packet();
+    packet->set_from(7);
+    packet->set_to(meshtastic::kBroadcastNode);
+    packet->set_id(88);
+    packet->mutable_decoded()->set_portnum(meshtastic::TELEMETRY_APP);
+    packet->mutable_decoded()->set_payload(telemetry.SerializeAsString());
+
+    meshtastic::RadioUpdate decoded;
+    std::string error;
+    assert(meshtastic::decode_from_radio(serialize(from_radio), decoded, error));
+    assert(decoded.local_stats);
+    assert(decoded.local_stats->uptime_seconds() == 3210U);
+}
+
+void test_admin_decode()
+{
+    meshtastic::AdminMessage response;
+    response.set_session_passkey("next-key");
+    response.mutable_get_config_response()->mutable_lora()->set_region(meshtastic::Config::LoRaConfig::US);
+
+    meshtastic::FromRadio from_radio;
+    auto *packet = from_radio.mutable_packet();
+    packet->set_from(42);
+    packet->set_to(7);
+    packet->set_id(99);
+    packet->mutable_decoded()->set_portnum(meshtastic::ADMIN_APP);
+    packet->mutable_decoded()->set_payload(response.SerializeAsString());
+
+    meshtastic::RadioUpdate decoded;
+    std::string error;
+    assert(meshtastic::decode_from_radio(serialize(from_radio), decoded, error));
+    assert(decoded.raw && decoded.raw->has_packet());
+    assert(decoded.packet && decoded.packet->admin);
+    assert(decoded.packet->admin->session_passkey() == "next-key");
+    assert(decoded.packet->admin->get_config_response().lora().region() == meshtastic::Config::LoRaConfig::US);
 }
 
 void test_channel_decode()
@@ -225,6 +323,12 @@ void test_tcp_client()
         assert(outbound_message.packet().id() == packet_id);
         assert(outbound_message.packet().decoded().portnum() == meshtastic::TEXT_MESSAGE_APP);
         assert(outbound_message.packet().decoded().payload() == "outbound");
+        const auto private_outbound = receive_frame(peer, parser);
+        meshtastic::ToRadio private_message;
+        assert(private_message.ParseFromArray(private_outbound.data(), static_cast<int>(private_outbound.size())));
+        assert(private_message.payload_variant_case() == meshtastic::ToRadio::kPacket);
+        assert(private_message.packet().to() == 0x87654321U);
+        assert(private_message.packet().decoded().payload() == "private outbound");
 
         meshtastic::FromRadio incoming;
         auto *packet = incoming.mutable_packet();
@@ -242,7 +346,7 @@ void test_tcp_client()
         ::close(listener);
     });
 
-    meshtastic::MeshtasticClient client({"127.0.0.1", port});
+    meshtastic::MeshtasticClient client({"127.0.0.1", port}, ":memory:");
     client.start();
     for (int attempt = 0; attempt < 100; ++attempt) {
         if (client.snapshot().state == meshtastic::ConnectionState::connected) break;
@@ -252,6 +356,7 @@ void test_tcp_client()
     assert(snapshot.state == meshtastic::ConnectionState::connected);
     assert(snapshot.my_node_number == 0x12345678U);
     assert(client.send_text("outbound"));
+    assert(client.send_text_to("private outbound", 0x87654321U));
     for (int attempt = 0; attempt < 100; ++attempt) {
         snapshot           = client.snapshot();
         const auto inbound = std::find_if(snapshot.messages.begin(), snapshot.messages.end(),
@@ -294,6 +399,9 @@ void test_stop_with_unresponsive_receiver()
         meshtastic::ToRadio request;
         assert(request.ParseFromArray(handshake.data(), static_cast<int>(handshake.size())));
         assert(request.payload_variant_case() == meshtastic::ToRadio::kWantConfigId);
+        meshtastic::FromRadio my_info;
+        my_info.mutable_my_info()->set_my_node_num(0x12345678U);
+        assert(send_all(peer, meshtastic::frame_payload(serialize(my_info))));
         meshtastic::FromRadio complete;
         complete.set_config_complete_id(request.want_config_id());
         assert(send_all(peer, meshtastic::frame_payload(serialize(complete))));
@@ -309,7 +417,7 @@ void test_stop_with_unresponsive_receiver()
         ::close(listener);
     });
 
-    meshtastic::MeshtasticClient client({"127.0.0.1", ntohs(address.sin_port)});
+    meshtastic::MeshtasticClient client({"127.0.0.1", ntohs(address.sin_port)}, ":memory:");
     client.start();
     for (int attempt = 0; attempt < 100; ++attempt) {
         if (client.snapshot().state == meshtastic::ConnectionState::connected) break;
@@ -399,7 +507,15 @@ void test_stop_during_pending_connect()
     }
     assert(pending);
 
-    meshtastic::MeshtasticClient client({"127.0.0.1", ntohs(address.sin_port)});
+    char storage_pattern[] = "/tmp/lilygo-meshtastic-pending-XXXXXX";
+    const auto *storage_directory = ::mkdtemp(storage_pattern);
+    assert(storage_directory);
+    const auto storage_path = std::filesystem::path(storage_directory) / "test.sqlite3";
+    {
+        meshtastic::Repository repository(storage_path);
+        repository.activate("127.0.0.1:" + std::to_string(ntohs(address.sin_port)), 0x12345678U);
+    }
+    meshtastic::MeshtasticClient client({"127.0.0.1", ntohs(address.sin_port)}, storage_path);
     client.start();
     for (int attempt = 0; attempt < 100; ++attempt) {
         if (client.snapshot().state == meshtastic::ConnectionState::connecting) break;
@@ -407,14 +523,12 @@ void test_stop_during_pending_connect()
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     assert(client.snapshot().state == meshtastic::ConnectionState::connecting);
-    const auto disable_start = std::chrono::steady_clock::now();
+    assert(client.send_text("queued before TCP connection"));
     client.set_enabled(false);
-    for (int attempt = 0; attempt < 75; ++attempt) {
-        if (client.snapshot().state == meshtastic::ConnectionState::stopped) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    assert(client.snapshot().state == meshtastic::ConnectionState::stopped);
-    assert(std::chrono::steady_clock::now() - disable_start < std::chrono::milliseconds(750));
+    const auto disabled_messages = client.snapshot().messages;
+    assert(std::any_of(disabled_messages.begin(), disabled_messages.end(), [](const auto &message) {
+        return message.text == "queued before TCP connection" && message.status == meshtastic::MessageStatus::failed;
+    }));
     client.set_enabled(true);
     for (int attempt = 0; attempt < 100; ++attempt) {
         if (client.snapshot().state == meshtastic::ConnectionState::connecting) break;
@@ -422,6 +536,7 @@ void test_stop_during_pending_connect()
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     assert(client.snapshot().state == meshtastic::ConnectionState::connecting);
+    assert(client.send_text("queued before stop"));
     const auto start = std::chrono::steady_clock::now();
     client.stop();
     const auto elapsed = std::chrono::steady_clock::now() - start;
@@ -431,18 +546,27 @@ void test_stop_during_pending_connect()
                  std::chrono::duration<double, std::milli>(elapsed).count());
     assert(elapsed < std::chrono::milliseconds(750));
     assert(client.snapshot().state == meshtastic::ConnectionState::stopped);
+    const auto stopped_messages = client.snapshot().messages;
+    assert(std::any_of(stopped_messages.begin(), stopped_messages.end(), [](const auto &message) {
+        return message.text == "queued before stop" && message.status == meshtastic::MessageStatus::failed;
+    }));
+    assert(!client.send_text("must not enqueue after stop"));
+    std::filesystem::remove_all(storage_path.parent_path());
 }
 
 }  // namespace
 
 int main()
 {
-    assert(std::string(meshtastic::kDefaultTcpHost) == "192.168.8.114");
+    assert(std::string(meshtastic::kDefaultTcpHost) == "127.0.0.1");
     assert(meshtastic::kDefaultTcpPort == 4403);
     test_encoding();
     test_framing();
     test_node_decode();
+    test_my_info_decode();
     test_text_and_handshake_decode();
+    test_local_stats_decode();
+    test_admin_decode();
     test_channel_decode();
     test_tcp_client();
     test_stop_with_unresponsive_receiver();

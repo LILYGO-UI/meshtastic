@@ -2,12 +2,12 @@ schema_version = 1
 
 [project]
 package = "lilygo-ui-meshtastic"
-version = "0.1.0"
+version = "0.2.0"
 app_id = "cc.lilygo.ui.Meshtastic"
 title = "Meshtastic"
 summary = "Meshtastic mesh network client for LILYGO UI"
-description = "A responsive Meshtastic client for browsing nodes, channels, positions, telemetry, and messages through meshtasticd over TCP."
-license = "LicenseRef-proprietary"
+description = "A responsive Meshtastic client for browsing nodes, channels, positions, telemetry, and messages through meshtasticd over TCP, with persistent conversations, reliable message status, device configuration and cached OpenStreetMap maps."
+license = "GPL-3.0-only"
 source_repo = "https://github.com/LILYGO-UI/meshtastic"
 homepage = "https://github.com/LILYGO-UI/meshtastic"
 categories = ["Network"]
@@ -27,6 +27,12 @@ caption = "Meshtastic connection dashboard"
 id = "network"
 reason = "Connect to meshtasticd and exchange Meshtastic mesh network data"
 
+[[project.permissions]]
+id = "filesystem"
+access = "read-write"
+scope = "app-data"
+reason = "Store conversations, node and telemetry history, radio configuration and cached map tiles"
+
 [project.compatibility]
 architectures = ["arm64"]
 min_appkit_version = "0.1.0"
@@ -40,6 +46,6 @@ cross_preset = "cm0-cross"
 package_dir = "dist"
 
 [deploy]
-host = "192.168.8.114"
+host = "192.168.8.197"
 user = "pi"
 port = 22

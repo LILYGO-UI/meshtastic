@@ -2,6 +2,7 @@
 #define LILYGO_UI_MESHTASTIC_NODES_VIEW_HPP
 
 #include "app_router.hpp"
+#include "components/search_input.hpp"
 #include "pages/nodes/nodes_view_model.hpp"
 #include "pages/page_view.hpp"
 
@@ -26,6 +27,7 @@ private:
 
     static void content_observer(lv_observer_t *observer, lv_subject_t *subject);
     static void select_node_event(lv_event_t *event);
+    static void filter_event(lv_event_t *event);
 
     void render_rows();
 
@@ -34,6 +36,7 @@ private:
     lv_obj_t *page_ = nullptr;
     lv_obj_t *list_ = nullptr;
     std::vector<RowContext> row_contexts_;
+    SearchInput search_;
 };
 
 #endif

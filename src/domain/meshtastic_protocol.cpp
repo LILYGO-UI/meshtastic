@@ -8,6 +8,19 @@
 #include <meshtastic/mesh.pb.h>
 
 namespace meshtastic {
+const char *message_status_name(MessageStatus status) noexcept
+{
+    switch (status) {
+        case MessageStatus::received: return "Received";
+        case MessageStatus::queued: return "Queued";
+        case MessageStatus::sent: return "Sent; awaiting ACK";
+        case MessageStatus::acknowledged: return "Acknowledged";
+        case MessageStatus::rejected: return "Rejected";
+        case MessageStatus::timed_out: return "ACK timed out";
+        case MessageStatus::failed: return "Failed";
+    }
+    return "Unknown";
+}
 namespace {
 
 constexpr std::array<std::uint8_t, 2> kFrameMagic{kFrameStart1, kFrameStart2};
@@ -33,6 +46,7 @@ Node convert_node(const NodeInfo &source)
         node.id         = source.user().id();
         node.long_name  = source.user().long_name();
         node.short_name = source.user().short_name();
+        node.role       = static_cast<std::uint32_t>(source.user().role());
     }
     if (source.has_position()) {
         const auto &position = source.position();
@@ -44,8 +58,10 @@ Node convert_node(const NodeInfo &source)
         const auto &metrics = source.device_metrics();
         if (metrics.has_battery_level()) node.battery_level = metrics.battery_level();
         if (metrics.has_voltage()) node.voltage = metrics.voltage();
+        if (metrics.has_uptime_seconds()) node.uptime_seconds = metrics.uptime_seconds();
     }
     if (source.has_hops_away()) node.hops_away = source.hops_away();
+    node.via_mqtt = source.via_mqtt();
 
     node.last_heard = source.last_heard();
     node.snr        = source.snr();
@@ -131,10 +147,38 @@ std::vector<std::uint8_t> frame_payload(const std::vector<std::uint8_t> &payload
     return frame;
 }
 
+std::vector<std::uint8_t> encode_to_radio(const ToRadio &message)
+{
+    return serialize_to_radio(message);
+}
+
+bool decode_to_radio(const std::vector<std::uint8_t> &payload, ToRadio &message, std::string &error)
+{
+    message.Clear();
+    if (payload.size() > kMaxRadioPayload ||
+        payload.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        error = "ToRadio protobuf exceeds the transport limit";
+        return false;
+    }
+    if (!message.ParseFromArray(payload.data(), static_cast<int>(payload.size()))) {
+        error = "invalid ToRadio protobuf";
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
 std::vector<std::uint8_t> encode_want_config(std::uint32_t config_id)
 {
     ToRadio message;
     message.set_want_config_id(config_id);
+    return serialize_to_radio(message);
+}
+
+std::vector<std::uint8_t> encode_heartbeat(std::uint32_t nonce)
+{
+    ToRadio message;
+    message.mutable_heartbeat()->set_nonce(nonce);
     return serialize_to_radio(message);
 }
 
@@ -155,6 +199,97 @@ std::vector<std::uint8_t> encode_text_message(const std::string &text, std::uint
     return serialize_to_radio(message);
 }
 
+std::vector<std::uint8_t> encode_packet(const MeshPacket &packet)
+{
+    ToRadio message;
+    message.mutable_packet()->CopyFrom(packet);
+    return serialize_to_radio(message);
+}
+
+std::vector<std::uint8_t> encode_data_message(PortNum port, const std::string &payload,
+                                              std::uint32_t destination, std::uint32_t packet_id,
+                                              std::uint32_t channel, std::uint32_t hop_limit,
+                                              MeshPacket::Priority priority)
+{
+    if (payload.size() > kMaxRadioPayload) return {};
+
+    MeshPacket packet;
+    packet.set_to(destination);
+    packet.set_channel(channel);
+    packet.set_id(packet_id);
+    packet.set_hop_limit(hop_limit);
+    packet.set_priority(priority);
+    packet.mutable_decoded()->set_portnum(port);
+    packet.mutable_decoded()->set_payload(payload);
+    return encode_packet(packet);
+}
+
+std::vector<std::uint8_t> encode_admin_message(const AdminMessage &message, std::uint32_t destination,
+                                               std::uint32_t packet_id, std::uint32_t channel,
+                                               std::uint32_t hop_limit)
+{
+    const auto size = message.ByteSizeLong();
+    if (size == 0 || size > kMaxRadioPayload || size > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        return {};
+    std::string payload(size, '\0');
+    if (!message.SerializeToArray(payload.data(), static_cast<int>(payload.size()))) return {};
+    return encode_data_message(ADMIN_APP, payload, destination, packet_id, channel, hop_limit,
+                               MeshPacket::RELIABLE);
+}
+
+namespace {
+
+void set_admin_session_passkey(AdminMessage &message, const std::string &session_passkey)
+{
+    if (!session_passkey.empty()) message.set_session_passkey(session_passkey);
+}
+
+}  // namespace
+
+std::vector<std::uint8_t> encode_admin_get_channel(std::uint32_t index, const std::string &session_passkey)
+{
+    if (index == std::numeric_limits<std::uint32_t>::max()) return {};
+    AdminMessage message;
+    message.set_get_channel_request(index + 1U);
+    set_admin_session_passkey(message, session_passkey);
+    return encode_admin_message(message);
+}
+
+std::vector<std::uint8_t> encode_admin_get_config(AdminMessage::ConfigType type,
+                                                  const std::string &session_passkey)
+{
+    AdminMessage message;
+    message.set_get_config_request(type);
+    set_admin_session_passkey(message, session_passkey);
+    return encode_admin_message(message);
+}
+
+std::vector<std::uint8_t> encode_admin_get_module_config(AdminMessage::ModuleConfigType type,
+                                                         const std::string &session_passkey)
+{
+    AdminMessage message;
+    message.set_get_module_config_request(type);
+    set_admin_session_passkey(message, session_passkey);
+    return encode_admin_message(message);
+}
+
+std::vector<std::uint8_t> encode_admin_set_config(const Config &config, const std::string &session_passkey)
+{
+    AdminMessage message;
+    message.mutable_set_config()->CopyFrom(config);
+    set_admin_session_passkey(message, session_passkey);
+    return encode_admin_message(message);
+}
+
+std::vector<std::uint8_t> encode_admin_set_module_config(const ModuleConfig &config,
+                                                         const std::string &session_passkey)
+{
+    AdminMessage message;
+    message.mutable_set_module_config()->CopyFrom(config);
+    set_admin_session_passkey(message, session_passkey);
+    return encode_admin_message(message);
+}
+
 bool decode_from_radio(const std::vector<std::uint8_t> &payload, RadioUpdate &message, std::string &error)
 {
     message = {};
@@ -169,12 +304,49 @@ bool decode_from_radio(const std::vector<std::uint8_t> &payload, RadioUpdate &me
         error = "invalid FromRadio protobuf";
         return false;
     }
+    message.raw = decoded;
 
     switch (decoded.payload_variant_case()) {
-        case FromRadio::kPacket:
+        case FromRadio::kPacket: {
+            PacketUpdate packet;
+            packet.packet = decoded.packet();
             message.text_message = convert_text_message(decoded.packet());
+            if (decoded.packet().has_decoded() && decoded.packet().decoded().portnum() == ADMIN_APP) {
+                AdminMessage admin;
+                const auto &bytes = decoded.packet().decoded().payload();
+                if (bytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+                    !admin.ParseFromArray(bytes.data(), static_cast<int>(bytes.size()))) {
+                    error = "invalid AdminMessage payload";
+                    return false;
+                }
+                packet.admin = std::move(admin);
+            }
+            if (decoded.packet().has_decoded()) {
+                const auto &data = decoded.packet().decoded();
+                const auto &bytes = data.payload();
+                bool valid = true;
+                switch (data.portnum()) {
+                    case ROUTING_APP: { Routing value; valid = value.ParseFromString(bytes); if (valid) packet.routing = value; break; }
+                    case POSITION_APP: { Position value; valid = value.ParseFromString(bytes); if (valid) packet.position = value; break; }
+                    case TELEMETRY_APP: {
+                        Telemetry value; valid = value.ParseFromString(bytes);
+                        if (valid) {
+                            packet.telemetry = value;
+                            if (value.has_local_stats()) message.local_stats = value.local_stats();
+                        }
+                        break;
+                    }
+                    case WAYPOINT_APP: { Waypoint value; valid = value.ParseFromString(bytes); if (valid) packet.waypoint = value; break; }
+                    case TRACEROUTE_APP: { RouteDiscovery value; valid = value.ParseFromString(bytes); if (valid) packet.route = value; break; }
+                    default: break;
+                }
+                if (!valid) { error = "invalid typed Meshtastic packet payload"; return false; }
+            }
+            message.packet = std::move(packet);
             break;
+        }
         case FromRadio::kMyInfo:
+            message.my_info         = decoded.my_info();
             message.my_node_number = decoded.my_info().my_node_num();
             break;
         case FromRadio::kNodeInfo:
@@ -182,6 +354,15 @@ bool decode_from_radio(const std::vector<std::uint8_t> &payload, RadioUpdate &me
             break;
         case FromRadio::kConfigCompleteId:
             message.config_complete_id = decoded.config_complete_id();
+            break;
+        case FromRadio::kConfig:
+            message.config = decoded.config();
+            break;
+        case FromRadio::kModuleConfig:
+            message.module_config = decoded.moduleconfig();
+            break;
+        case FromRadio::kMetadata:
+            message.metadata = decoded.metadata();
             break;
         case FromRadio::kRebooted:
             message.rebooted = decoded.rebooted();
