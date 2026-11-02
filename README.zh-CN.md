@@ -235,14 +235,19 @@ lpm pack
 -DCM0_BSP_CACHE_DIR=/absolute/path/to/cache。无需在相邻目录克隆 CM0BspBuilder。
 
 CPack 将 ARM64 .deb 写入 dist/。软件包安装可执行文件、Launcher 清单、图标、桌面条目、
-AppStream 元数据、第三方许可和 AppKit 字体许可。运行时依赖包含 lilygo-ui-appkit-dev >= 0.1.0，
-最低版本由 lpm.toml 的 min_appkit_version 声明。
+AppStream 元数据、第三方许可和 AppKit 字体许可。运行时依赖包含 `meshtasticd` 和
+`lilygo-ui-appkit-dev >= 0.1.0`，AppKit 最低版本由 lpm.toml 的 min_appkit_version 声明。
 
 使用 lpm.toml 中的 SSH 目标部署最新软件包：
 
 ```sh
 lpm deploy
 ```
+
+`lpm deploy` 会通过 `apt-get` 安装上传的软件包，因此 Debian 会从目标机已配置的
+APT 软件源解析声明的 `meshtasticd` 依赖。目标机必须配置包含 `meshtasticd` 的软件源；
+`lpm deploy` 不会自动刷新 APT 索引。请使用会执行 `apt-get install --reinstall` 的新版
+LPM；旧版的 `dpkg --install` 流程不会解析依赖。
 
 <details>
 <summary>底层 CMake 命令</summary>

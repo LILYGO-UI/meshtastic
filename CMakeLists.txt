@@ -288,7 +288,7 @@ set(CPACK_COMPONENTS_ALL app)
 set(CPACK_DEBIAN_APP_PACKAGE_NAME "${LILYGO_UI_PACKAGE_NAME}")
 set(CPACK_DEBIAN_APP_FILE_NAME DEB-DEFAULT)
 set(CPACK_DEBIAN_APP_PACKAGE_DEPENDS
-    "libc6, libstdc++6, libdrm2, libfreetype6, libpng16-16t64, zlib1g, libbz2-1.0, libbrotli1, libsqlite3-0, libjson-c5, curl, ca-certificates, lilygo-ui-appkit-dev (>= ${LILYGO_UI_MIN_APPKIT_VERSION})")
+    "meshtasticd, libc6, libstdc++6, libdrm2, libfreetype6, libpng16-16t64, zlib1g, libbz2-1.0, libbrotli1, libsqlite3-0, libjson-c5, curl, ca-certificates, lilygo-ui-appkit-dev (>= ${LILYGO_UI_MIN_APPKIT_VERSION})")
 if(LILYGO_UI_GRAPHICS_DEBIAN_DEPENDS)
     string(APPEND CPACK_DEBIAN_APP_PACKAGE_DEPENDS
         ", ${LILYGO_UI_GRAPHICS_DEBIAN_DEPENDS}")

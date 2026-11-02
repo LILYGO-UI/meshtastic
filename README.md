@@ -268,14 +268,22 @@ to choose another cache location. No sibling CM0BspBuilder checkout is needed.
 
 CPack writes an ARM64 .deb to dist/. The package installs the executable,
 Launcher manifest, icon, desktop file, AppStream metadata, third-party notices,
-and AppKit font licenses. Its runtime dependency includes
-lilygo-ui-appkit-dev >= 0.1.0, as declared by min_appkit_version in lpm.toml.
+and AppKit font licenses. Its runtime dependencies include `meshtasticd` and
+`lilygo-ui-appkit-dev >= 0.1.0`, with the minimum AppKit version declared by
+`min_appkit_version` in lpm.toml.
 
 Deploy the newest package using the SSH destination in lpm.toml:
 
 ```sh
 lpm deploy
 ```
+
+`lpm deploy` installs the uploaded package with `apt-get`, so Debian resolves
+the declared `meshtasticd` dependency from the target's configured APT sources.
+The target must have a source containing `meshtasticd`; `lpm deploy` does not
+refresh APT indexes. Use a current LPM version that installs local packages
+with `apt-get install --reinstall`; the older `dpkg --install` workflow cannot
+resolve dependencies.
 
 <details>
 <summary>Underlying CMake commands</summary>
