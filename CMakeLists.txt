@@ -65,6 +65,7 @@ add_library(lilygo_ui_meshtastic_core STATIC
     src/domain/meshtastic_client.cpp
     src/transport/tcp_transport.cpp
     src/services/radio_session.cpp
+    src/services/meshtasticd_service.cpp
     src/persistence/meshtastic_repository.cpp
     src/configuration/admin_transaction.cpp
     src/configuration/configuration_catalog.cpp
@@ -78,6 +79,9 @@ target_include_directories(lilygo_ui_meshtastic_core PUBLIC
 target_compile_options(lilygo_ui_meshtastic_core PRIVATE
     -Wall -Wextra -Wpedantic)
 target_compile_features(lilygo_ui_meshtastic_core PUBLIC cxx_std_17)
+if(CM0_SIMULATOR)
+    target_compile_definitions(lilygo_ui_meshtastic_core PRIVATE MESHTASTIC_SIMULATOR=1)
+endif()
 target_link_libraries(lilygo_ui_meshtastic_core PUBLIC
     Threads::Threads
     PNG::PNG
@@ -189,6 +193,11 @@ if(BUILD_TESTING AND NOT CMAKE_CROSSCOMPILING)
     target_link_libraries(meshtastic-core-tests PRIVATE
         lilygo_ui_meshtastic_core)
     add_test(NAME meshtastic-core COMMAND meshtastic-core-tests)
+
+    add_executable(meshtastic-service-tests tests/test_meshtasticd_service.cpp)
+    target_compile_options(meshtastic-service-tests PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    target_link_libraries(meshtastic-service-tests PRIVATE lilygo_ui_meshtastic_core)
+    add_test(NAME meshtastic-service COMMAND meshtastic-service-tests)
 
     add_executable(meshtastic-view-model-tests tests/test_view_model.cpp)
     target_compile_options(meshtastic-view-model-tests PRIVATE

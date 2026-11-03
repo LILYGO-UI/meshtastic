@@ -249,6 +249,10 @@ APT 软件源解析声明的 `meshtasticd` 依赖。目标机必须配置包含 
 `lpm deploy` 不会自动刷新 APT 索引。请使用会执行 `apt-get install --reinstall` 的新版
 LPM；旧版的 `dpkg --install` 流程不会解析依赖。
 
+应用启动时会检查本机默认端点（`127.0.0.1:4403`）。如果 `meshtasticd.service` 没有运行，
+应用会请求 systemd 非交互启动服务，然后继续使用客户端自身的 TCP 重连机制。远程端点和
+自定义端口不会启动本机服务。
+
 <details>
 <summary>底层 CMake 命令</summary>
 

@@ -285,6 +285,11 @@ refresh APT indexes. Use a current LPM version that installs local packages
 with `apt-get install --reinstall`; the older `dpkg --install` workflow cannot
 resolve dependencies.
 
+At startup, the application checks the local default endpoint (`127.0.0.1:4403`).
+If `meshtasticd.service` is not active, it requests a non-interactive systemd
+start and then continues with the client's normal TCP reconnect loop. Remote
+endpoints and custom ports do not start a local service.
+
 <details>
 <summary>Underlying CMake commands</summary>
 

@@ -2,6 +2,7 @@
 
 #include "app_identity.h"
 #include "domain/meshtastic_client.hpp"
+#include "services/meshtasticd_service.hpp"
 
 #include <charconv>
 #include <cstdio>
@@ -62,6 +63,9 @@ int main(int argc, char **argv)
     }
 
     runtime_args.push_back(nullptr);
+    meshtastic::Endpoint endpoint{host, port};
     lilygo_ui_meshtastic_configure(std::move(host), port);
+    const auto service_start = meshtastic::ensure_local_meshtasticd(endpoint);
+    (void)service_start;
     return cm0_app_run(static_cast<int>(runtime_args.size() - 1), runtime_args.data(), cm0_app_get_descriptor());
 }
