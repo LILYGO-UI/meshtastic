@@ -2,7 +2,7 @@ schema_version = 1
 
 [project]
 package = "lilygo-ui-meshtastic"
-version = "0.2.0"
+version = "0.2.1"
 app_id = "cc.lilygo.ui.Meshtastic"
 title = "Meshtastic"
 summary = "Meshtastic mesh network client for LILYGO UI"
